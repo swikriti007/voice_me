@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import secrets
 
 import requests
@@ -273,6 +274,8 @@ def trigger_sos(request):
         'location_label': location_label,
         'lat': lat,
         'lng': lng,
+        'source': 'app',
+        'status': 'active',
         'created_at': now,
     }
     result = sos_alerts_collection.insert_one(alert_doc)
@@ -285,3 +288,164 @@ def trigger_sos(request):
         'parent': _public_contact(child.get('parent')),
         'doctor': _public_contact(child.get('doctor')),
     }, status=status.HTTP_201_CREATED)
+
+
+# How long an unresolved SOS keeps showing on the parent/caregiver screens.
+# Past this it is treated as stale rather than a live emergency.
+SOS_ACTIVE_WINDOW = datetime.timedelta(hours=24)
+
+
+def hash_device_key(key):
+    return hashlib.sha256(key.encode('utf-8')).hexdigest()
+
+
+def _authenticate_device(request):
+    """
+    The SOS hardware has no user login, so it sends the key printed by
+    `manage.py pair_device` in an X-Device-Key header. Only the key's hash is
+    stored, so a leaked database dump can't be used to fake alerts.
+    """
+    key = (request.headers.get('X-Device-Key') or '').strip()
+    if not key:
+        return None
+    return children_collection.find_one({'device.key_hash': hash_device_key(key)})
+
+
+def _to_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _device_gps_update(child, data):
+    """
+    Saves the device's position as the child's GPS status (the same shape
+    gps_status writes), so the child's home screen and the context-aware
+    assistant react to where the hardware actually is. Returns the saved
+    gps dict, or None when the device has no GPS fix yet.
+    """
+    lat = _to_float(data.get('lat'))
+    lng = _to_float(data.get('lng'))
+    if not data.get('gpsFix') or lat is None or lng is None:
+        return None
+
+    place_category, looked_up_label = _lookup_place(lat, lng)
+    gps = {
+        'connected': True,
+        'location_label': data.get('place') or looked_up_label,
+        'place_category': place_category,
+        'lat': lat,
+        'lng': lng,
+        'source': 'device',
+        'updated_at': datetime.datetime.utcnow().isoformat(),
+    }
+    children_collection.update_one({'_id': child['_id']}, {'$set': {'gps': gps}})
+    return gps
+
+
+@api_view(['POST'])
+def device_location(request):
+    child = _authenticate_device(request)
+    if not child:
+        return Response({'error': 'Unknown device.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    gps = _device_gps_update(child, request.data)
+    if gps is None:
+        return Response({'error': 'No GPS fix yet.'}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(gps, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+def device_sos(request):
+    child = _authenticate_device(request)
+    if not child:
+        return Response({'error': 'Unknown device.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    data = request.data
+    # Without a fix the device still reports its last known position (or
+    # 0,0 if it never had one); keep it, but flag it so the apps don't
+    # present it as the current location.
+    gps = _device_gps_update(child, data)
+    now = datetime.datetime.utcnow()
+    alert_doc = {
+        'child_id': child['_id'],
+        'user_id': child.get('user_id'),
+        'location_label': (gps or {}).get('location_label') or data.get('place')
+                          or (child.get('gps') or {}).get('location_label'),
+        'lat': _to_float(data.get('lat')),
+        'lng': _to_float(data.get('lng')),
+        'gps_fix': bool(data.get('gpsFix')),
+        'source': 'device',
+        'device_id': (child.get('device') or {}).get('id'),
+        'status': 'active',
+        'created_at': now,
+    }
+    result = sos_alerts_collection.insert_one(alert_doc)
+    return Response({'alert_id': str(result.inserted_id), 'triggered_at': now.isoformat()},
+                    status=status.HTTP_201_CREATED)
+
+
+def _child_for_viewer(user_id):
+    """The child a logged-in parent (owner) or connected caregiver looks after."""
+    return (children_collection.find_one({'user_id': user_id})
+            or children_collection.find_one({'caregiver.user_id': user_id}))
+
+
+def _serialize_alert(alert):
+    lat, lng = alert.get('lat'), alert.get('lng')
+    has_coords = lat is not None and lng is not None and not (lat == 0 and lng == 0)
+    return {
+        'id': str(alert['_id']),
+        'source': alert.get('source', 'app'),
+        'location_label': alert.get('location_label'),
+        'lat': lat,
+        'lng': lng,
+        'gps_fix': alert.get('gps_fix', has_coords),
+        'maps_link': f'https://www.google.com/maps?q={lat},{lng}' if has_coords else None,
+        'created_at': alert['created_at'].isoformat() + 'Z',
+    }
+
+
+# Alerts saved before statuses existed have no status field; count them as open.
+_OPEN_ALERT = {'status': {'$in': ['active', None]}}
+
+
+@api_view(['GET'])
+def sos_latest(request):
+    user_id = get_authenticated_user(request)
+    if not user_id:
+        return Response({'error': 'Unauthorized access.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    child = _child_for_viewer(user_id)
+    if not child:
+        return Response({'alert': None}, status=status.HTTP_200_OK)
+
+    alert = sos_alerts_collection.find_one(
+        {
+            'child_id': child['_id'],
+            **_OPEN_ALERT,
+            'created_at': {'$gte': datetime.datetime.utcnow() - SOS_ACTIVE_WINDOW},
+        },
+        sort=[('created_at', -1)],
+    )
+    return Response({'alert': _serialize_alert(alert) if alert else None}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+def sos_resolve(request):
+    user_id = get_authenticated_user(request)
+    if not user_id:
+        return Response({'error': 'Unauthorized access.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    child = _child_for_viewer(user_id)
+    if not child:
+        return Response({'error': 'No child found for this account.'}, status=status.HTTP_404_NOT_FOUND)
+
+    # Resolves every open alert: the child is safe, whichever button (phone
+    # or device) raised the alarm and however many times it was pressed.
+    result = sos_alerts_collection.update_many(
+        {'child_id': child['_id'], **_OPEN_ALERT},
+        {'$set': {'status': 'resolved', 'resolved_by': user_id, 'resolved_at': datetime.datetime.utcnow()}},
+    )
+    return Response({'resolved': result.modified_count}, status=status.HTTP_200_OK)

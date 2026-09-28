@@ -18,6 +18,7 @@ import * as Haptics from 'expo-haptics';
 import * as Speech from 'expo-speech';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE_URL } from '@/constants/api';
+import { SosAlertBanner } from '@/components/sos-alert-banner';
 import { dialPhone } from '@/constants/phone';
 
 interface RoutineItem {
@@ -300,6 +301,8 @@ export default function Parentspage() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
+        <SosAlertBanner />
+
         {/* Title Header */}
         <View style={styles.titleSection}>
           <Text style={styles.nepaliTitle}>अभिभावक र बालबालिका</Text>

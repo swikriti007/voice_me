@@ -18,6 +18,7 @@ import * as Speech from 'expo-speech';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE_URL } from '@/constants/api';
 import { dialPhone } from '@/constants/phone';
+import { SosAlertBanner } from '@/components/sos-alert-banner';
 
 // Shape returned by /api/caregiver/routines/ — the connected child's own
 // routine, which the caregiver can only watch, never set or edit.
@@ -445,6 +446,8 @@ function CaregiverDashboard() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
+        <SosAlertBanner />
+
         {/* Title Block */}
         <View style={styles.titleSection}>
           <View style={styles.caregiverBadgeRow}>
