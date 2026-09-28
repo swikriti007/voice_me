@@ -132,33 +132,41 @@ export default function CaregiverRegistrationPage() {
     // and links that account to a child by the connect code the parent
     // shared with them — the caregiver never edits the child profile directly.
     try {
-      let token = await AsyncStorage.getItem(AUTH_TOKEN_KEY);
+      // Always sign in with the email/password typed here, even if another
+      // account (e.g. the parent's) is still logged in on this device —
+      // otherwise that account gets linked as the caregiver instead and the
+      // caregiver's own login is never created.
+      let token: string | null = null;
+      let user: any = { name: name.trim(), email: email.trim() };
 
-      if (!token) {
-        const createRes = await fetch(`${API_BASE_URL}/api/create-account/`, {
+      const createRes = await fetch(`${API_BASE_URL}/api/create-account/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim(), email: email.trim(), password }),
+      });
+      const createData = await createRes.json().catch(() => ({}));
+
+      if (createRes.ok) {
+        token = createData.token;
+        if (createData?.user) user = createData.user;
+      } else if (/email/i.test(createData?.error || "")) {
+        // Account already exists (e.g. re-registering on this device) - log in instead.
+        const loginRes = await fetch(`${API_BASE_URL}/api/login/`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: name.trim(), email: email.trim(), password }),
+          body: JSON.stringify({ email: email.trim(), password }),
         });
-        const createData = await createRes.json().catch(() => ({}));
-
-        if (createRes.ok) {
-          token = createData.token;
-        } else if (/email/i.test(createData?.error || "")) {
-          // Account already exists (e.g. re-registering on this device) - log in instead.
-          const loginRes = await fetch(`${API_BASE_URL}/api/login/`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ email: email.trim(), password }),
-          });
-          const loginData = await loginRes.json().catch(() => ({}));
-          if (loginRes.ok) token = loginData.token;
+        const loginData = await loginRes.json().catch(() => ({}));
+        if (loginRes.ok) {
+          token = loginData.token;
+          if (loginData?.user) user = loginData.user;
         }
+      }
 
-        if (token) {
-          await AsyncStorage.setItem(AUTH_TOKEN_KEY, token);
-          await AsyncStorage.setItem(AUTH_USER_KEY, JSON.stringify(createData?.user || { name: name.trim(), email: email.trim() }));
-        }
+      if (token) {
+        await AsyncStorage.setItem(AUTH_TOKEN_KEY, token);
+        await AsyncStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+        await AsyncStorage.setItem("voiceme.selectedRole", "caregiver");
       }
 
       if (!token) {

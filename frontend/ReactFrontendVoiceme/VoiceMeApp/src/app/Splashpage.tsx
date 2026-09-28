@@ -6,8 +6,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const AUTH_TOKEN_KEY = 'voiceme.authToken';
 
 async function goToNextScreen() {
-  const authToken = await AsyncStorage.getItem(AUTH_TOKEN_KEY);
-  router.replace(authToken ? '/Homepage' : '/Registerpage');
+  const [[, authToken], [, role]] = await AsyncStorage.multiGet([AUTH_TOKEN_KEY, 'voiceme.selectedRole']);
+  if (!authToken) {
+    router.replace('/Registerpage');
+  } else {
+    router.replace(role === 'caregiver' ? '/Caregiverpage' : '/Homepage');
+  }
 }
 
 export default function Splashpage() {

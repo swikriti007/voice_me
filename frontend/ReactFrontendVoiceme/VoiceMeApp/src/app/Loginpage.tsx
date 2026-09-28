@@ -20,7 +20,28 @@ const AUTH_USER_KEY = 'voiceme.user';
 const REGISTERED_NAME_KEY = 'voiceme.registeredName';
 const REGISTERED_AGE_KEY = 'voiceme.registeredAge';
 
+const SELECTED_ROLE_KEY = 'voiceme.selectedRole';
+
+// Cached details from whoever was logged in before on this device; cleared
+// on login so the new account never shows the previous person's info.
+const CACHED_PROFILE_KEYS = [
+  'voiceme.registeredName',
+  'voiceme.registeredAge',
+  'voiceme.registeredAvatar',
+  'voiceme.parentName',
+  'voiceme.emergencyPhone',
+  'voiceme.doctorName',
+  'voiceme.doctorPhone',
+  'voiceme.caregiverName',
+  'voiceme.caregiverPhone',
+  'voiceme.caregiverEmail',
+  'voiceme.currentRole',
+  'voiceme.bellActive',
+  'voiceme.daily_routine_state',
+];
+
 const persistAuthSession = async (token: string, user: { id?: string; name?: string; email?: string; age?: string | number }) => {
+  await AsyncStorage.multiRemove(CACHED_PROFILE_KEYS);
   await AsyncStorage.setItem(AUTH_TOKEN_KEY, token);
   await AsyncStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
 
@@ -76,7 +97,28 @@ export default function Loginpage() {
       }
 
       await persistAuthSession(data.token, data.user || { email: email.trim() });
-      router.replace("/Homepage");
+
+      // A caregiver account is one linked to a child via a connect code;
+      // send it to its own dashboard instead of the child/parent home.
+      let isCaregiver = false;
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/caregiver/dashboard/`, {
+          headers: { Authorization: `Bearer ${data.token}` },
+        });
+        if (res.ok) {
+          isCaregiver = true;
+          const child = await res.json();
+          await AsyncStorage.multiSet([
+            ['voiceme.caregiverName', child.caregiver?.name || ''],
+            ['voiceme.caregiverPhone', child.caregiver?.phone || ''],
+            ['voiceme.caregiverEmail', email.trim()],
+            ['voiceme.currentRole', 'caregiver'],
+          ]);
+        }
+      } catch {}
+
+      await AsyncStorage.setItem(SELECTED_ROLE_KEY, isCaregiver ? 'caregiver' : 'user');
+      router.replace(isCaregiver ? "/Caregiverpage" : "/Homepage");
     } catch (error: any) {
       console.error('Login request failed:', error);
       setFormError('Unable to reach the server. Please check your connection and try again.');
