@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Voice Me Centre{% endblock %}</title>
+  <style>
+    :root {
+      --bg: #F7F2EA; --surface: #FFFFFF; --surface-2: #F3ECE1; --border: #E4D9C8;
+      --text: #2B2420; --muted: #76675B; --brand: #28552F; --brand-text: #FFF8ED;
+      --accent: #C96F38; --danger: #B3261E; --danger-bg: #FDECEA;
+      --ok-bg: #E6F2E7; --ok: #24572C; --warn-bg: #FFF3DC; --warn: #8A5A00;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #171512; --surface: #221F1B; --surface-2: #2B2722; --border: #3A342D;
+        --text: #F1EAE0; --muted: #B3A797; --brand: #7FC08A; --brand-text: #10200F;
+        --accent: #E59A66; --danger: #FF8A80; --danger-bg: #3A1D1B;
+        --ok-bg: #1D3320; --ok: #9FD8A8; --warn-bg: #3A2E14; --warn: #F2C46B;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text);
+      font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    a { color: var(--brand); }
+    header { background: var(--surface); border-bottom: 1px solid var(--border); }
+    .bar { max-width: 1280px; margin: 0 auto; padding: 14px 16px; display: flex;
+      align-items: center; gap: 16px; flex-wrap: wrap; }
+    .logo { font-weight: 800; font-size: 18px; color: var(--accent); text-decoration: none; }
+    .logo span { color: var(--muted); font-weight: 600; font-size: 14px; margin-left: 6px; }
+    .spacer { flex: 1; }
+    main { max-width: 1280px; margin: 0 auto; padding: 24px 16px 48px; }
+    h1 { font-size: 24px; margin: 0 0 4px; }
+    .sub { color: var(--muted); margin: 0 0 20px; }
+    .btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border);
+      background: var(--surface); color: var(--text); padding: 8px 14px; border-radius: 999px;
+      font: inherit; font-weight: 600; cursor: pointer; text-decoration: none; }
+    .btn:hover { background: var(--surface-2); }
+    .btn-primary { background: var(--brand); border-color: var(--brand); color: var(--brand-text); }
+    .btn-primary:hover { background: var(--brand); filter: brightness(1.08); }
+    .btn-danger { color: var(--danger); border-color: var(--danger); background: transparent; }
+    .btn-danger:hover { background: var(--danger-bg); }
+    .btn-sm { padding: 4px 10px; font-size: 13px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px; }
+    input, select { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 9px 12px; width: 100%; }
+    input:focus, select:focus { outline: 2px solid var(--brand); outline-offset: 1px; }
+    label { display: block; font-weight: 600; margin: 14px 0 6px; }
+    .hint { color: var(--muted); font-size: 13px; margin-top: 4px; }
+    .messages { list-style: none; padding: 0; margin: 0 0 16px; display: grid; gap: 8px; }
+    .messages li { padding: 10px 14px; border-radius: 10px; }
+    .messages .success { background: var(--ok-bg); color: var(--ok); }
+    .messages .error { background: var(--danger-bg); color: var(--danger); }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <a class="logo" href="{% url 'centre:dashboard' %}">Voice Me<span>Centre admin</span></a>
+      <div class="spacer"></div>
+      {% if user.is_authenticated and user.is_staff %}
+        <span class="hint" style="margin:0">{{ user.get_username }}</span>
+        <form method="post" action="{% url 'centre:logout' %}" style="margin:0">
+          {% csrf_token %}<button class="btn btn-sm" type="submit">Log out</button>
+        </form>
+      {% endif %}
+    </div>
+  </header>
+  <main>
+    {% if messages %}
+      <ul class="messages">
+        {% for message in messages %}<li class="{{ message.tags }}">{{ message }}</li>{% endfor %}
+      </ul>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

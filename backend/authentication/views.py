@@ -1,31 +1,30 @@
 import jwt
 import datetime
-import hashlib
-import re
-import secrets
+import logging
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-from django.conf import settings
-from django.core.mail import EmailMultiAlternatives
 from django.contrib.auth.hashers import make_password, check_password
-from django.shortcuts import render
 from bson import ObjectId
-from .db import users_collection, notes_collection, password_resets_collection
+from .accounts import delete_user_and_data
+from .db import users_collection, notes_collection
+from .security import (
+    INVALID_EMAIL_ERROR,
+    PASSWORD_RESET,
+    SIGNUP,
+    check_code,
+    code_retry_after,
+    encrypt_password,
+    is_valid_gmail,
+    normalize_email,
+    password_policy_error,
+    send_code,
+)
+
+logger = logging.getLogger(__name__)
 
 SECRET_KEY = "your_jwt_secret_key_change_in_production"
 
-# Accounts must use a Gmail address (e.g. "name@gmail.com"); anything else,
-# like a bare "name@", is rejected at registration and login.
-GMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@gmail\.com$', re.IGNORECASE)
-INVALID_EMAIL_ERROR = 'Invalid email. Please use a Gmail address (example@gmail.com).'
-
-
-def is_valid_gmail(email):
-    return bool(GMAIL_RE.match((email or '').strip()))
-
-# How long an emailed reset link stays usable.
-RESET_LINK_TTL_MINUTES = 30
 
 def generate_token(user_id):
     payload = {
@@ -46,10 +45,47 @@ def get_authenticated_user(request):
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
         return None
 
+
+def _too_soon_response(retry_after):
+    return Response(
+        {'error': f'Please wait {retry_after} seconds before asking for another code.',
+         'retry_after': retry_after},
+        status=status.HTTP_429_TOO_MANY_REQUESTS,
+    )
+
+
+@api_view(['POST'])
+def send_signup_code(request):
+    """
+    Step 1 of sign-up: emails a 6-digit code to the Gmail address. Only
+    someone who can open that inbox can finish registering, so made-up
+    addresses that merely end in @gmail.com can no longer get an account.
+    """
+    email = normalize_email(request.data.get('email'))
+
+    if not is_valid_gmail(email):
+        return Response({'error': INVALID_EMAIL_ERROR}, status=status.HTTP_400_BAD_REQUEST)
+    if users_collection.find_one({'email': email}):
+        return Response({'error': 'An account with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    retry_after = code_retry_after(email, SIGNUP)
+    if retry_after:
+        return _too_soon_response(retry_after)
+
+    try:
+        send_code(email, SIGNUP)
+    except Exception:
+        logger.exception('Could not send sign-up code to %s', email)
+        return Response({'error': 'Could not send the code right now. Please try again shortly.'},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    return Response({'message': 'A verification code has been sent to your Gmail.'}, status=status.HTTP_200_OK)
+
+
 @api_view(['POST'])
 def create_account(request):
     data = request.data
-    email = data.get('email')
+    email = normalize_email(data.get('email'))
     password = data.get('password')
     name = data.get('name', '')
     age = data.get('age')
@@ -60,14 +96,27 @@ def create_account(request):
     if not is_valid_gmail(email):
         return Response({'error': INVALID_EMAIL_ERROR}, status=status.HTTP_400_BAD_REQUEST)
 
+    policy_error = password_policy_error(password)
+    if policy_error:
+        return Response({'error': policy_error}, status=status.HTTP_400_BAD_REQUEST)
+
     if users_collection.find_one({'email': email}):
         return Response({'error': 'An account with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not data.get('code'):
+        return Response({'error': 'Please enter the verification code sent to your Gmail.'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    code_error = check_code(email, SIGNUP, data.get('code'))
+    if code_error:
+        return Response({'error': code_error}, status=status.HTTP_400_BAD_REQUEST)
 
     user_doc = {
         'name': name,
         'email': email,
         'age': age,
         'password': make_password(password),
+        'password_encrypted': encrypt_password(password),
+        'email_verified': True,
         'created_at': datetime.datetime.utcnow()
     }
 
@@ -90,7 +139,7 @@ def create_account(request):
 @api_view(['POST'])
 def login_user(request):
     data = request.data
-    email = data.get('email')
+    email = normalize_email(data.get('email'))
     password = data.get('password')
 
     if not email or not password:
@@ -99,9 +148,18 @@ def login_user(request):
     if not is_valid_gmail(email):
         return Response({'error': INVALID_EMAIL_ERROR}, status=status.HTTP_400_BAD_REQUEST)
 
+    # Only accounts that actually registered can log in: an unknown Gmail
+    # gets the same answer as a wrong password.
     user = users_collection.find_one({'email': email})
     if not user or not check_password(password, user['password']):
         return Response({'error': 'Invalid email or password.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    # Accounts created before the centre panel existed have no viewable copy
+    # yet; fill it in now that the correct password has been typed.
+    if not user.get('password_encrypted'):
+        encrypted = encrypt_password(password)
+        if encrypted:
+            users_collection.update_one({'_id': user['_id']}, {'$set': {'password_encrypted': encrypted}})
 
     token = generate_token(user['_id'])
     return Response({
@@ -118,7 +176,7 @@ def login_user(request):
 @api_view(['POST'])
 def delete_account(request):
     data = request.data
-    email = data.get('email')
+    email = normalize_email(data.get('email'))
     password = data.get('password')
 
     if not email or not password:
@@ -128,31 +186,14 @@ def delete_account(request):
     if not user or not check_password(password, user['password']):
         return Response({'error': 'Invalid email or password.'}, status=status.HTTP_401_UNAUTHORIZED)
 
-    user_id = str(user['_id'])
-    users_collection.delete_one({'_id': user['_id']})
-    notes_collection.delete_many({'user_id': user_id})
-    password_resets_collection.delete_many({'email': email})
+    delete_user_and_data(user)
 
     return Response({'message': 'Account deleted successfully.'}, status=status.HTTP_200_OK)
 
-def _hash_reset_token(token):
-    """Reset tokens are looked up by value, so they need a deterministic hash."""
-    return hashlib.sha256(token.encode('utf-8')).hexdigest()
-
-def _reset_link_base(request):
-    """
-    Where the emailed link should point. PASSWORD_RESET_BASE_URL matters once the
-    app runs on a phone: the request may arrive at 10.0.2.2 or a LAN address that
-    means nothing inside an email client.
-    """
-    configured = getattr(settings, 'PASSWORD_RESET_BASE_URL', '')
-    if configured:
-        return configured.rstrip('/')
-    return request.build_absolute_uri('/').rstrip('/')
-
 @api_view(['POST'])
 def forgot_password(request):
-    email = (request.data.get('email') or '').strip()
+    """Emails a 6-digit reset code to the account's Gmail inbox."""
+    email = normalize_email(request.data.get('email'))
 
     if not email:
         return Response({'error': 'Email is required.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -160,122 +201,55 @@ def forgot_password(request):
     # Always answer the same way so this endpoint cannot be used to discover
     # which email addresses have an account.
     generic_response = {
-        'message': 'If an account exists for that email, a password reset link has been sent.'
+        'message': 'If an account exists for that email, a reset code has been sent to it.'
     }
 
     user = users_collection.find_one({'email': email})
     if not user:
         return Response(generic_response, status=status.HTTP_200_OK)
 
-    token = secrets.token_urlsafe(32)
-    now = datetime.datetime.utcnow()
+    retry_after = code_retry_after(email, PASSWORD_RESET)
+    if retry_after:
+        return _too_soon_response(retry_after)
 
-    # One live link per account: requesting a new one retires the previous link.
-    password_resets_collection.replace_one(
-        {'email': email},
-        {
-            'email': email,
-            'token_hash': _hash_reset_token(token),
-            'created_at': now,
-            'expires_at': now + datetime.timedelta(minutes=RESET_LINK_TTL_MINUTES)
-        },
-        upsert=True
-    )
-
-    reset_url = f"{_reset_link_base(request)}/api/reset-password/{token}/"
-    greeting = user.get('name') or 'there'
-    text_body = (
-        f"Namaste {greeting},\n\n"
-        "We received a request to reset your Voice Me password.\n"
-        f"Open this link to choose a new password:\n\n{reset_url}\n\n"
-        f"The link stops working in {RESET_LINK_TTL_MINUTES} minutes.\n"
-        "If you did not ask for this, you can ignore this email."
-    )
-    html_body = (
-        f"<p>Namaste {greeting},</p>"
-        "<p>We received a request to reset your Voice Me password.</p>"
-        f'<p><a href="{reset_url}" style="background:#28552F;color:#FFF8ED;'
-        'padding:12px 22px;border-radius:24px;text-decoration:none;'
-        'font-family:sans-serif;display:inline-block">Reset my password</a></p>'
-        f"<p>Or paste this into your browser:<br>{reset_url}</p>"
-        f"<p>The link stops working in {RESET_LINK_TTL_MINUTES} minutes. "
-        "If you did not ask for this, you can ignore this email.</p>"
-    )
-
-    message = EmailMultiAlternatives(
-        subject='Reset your Voice Me password',
-        body=text_body,
-        to=[email],
-    )
-    message.attach_alternative(html_body, 'text/html')
-    message.send(fail_silently=True)
-
-    # Development convenience: with the console email backend the message only
-    # reaches the server terminal, so hand the link back while DEBUG is on.
-    # Remove this once real email delivery is configured for production.
-    if settings.DEBUG:
-        generic_response['debug_reset_url'] = reset_url
+    try:
+        send_code(email, PASSWORD_RESET, name=user.get('name'))
+    except Exception:
+        # Logged rather than reported: an error here would reveal that the
+        # account exists.
+        logger.exception('Could not send password reset code to %s', email)
 
     return Response(generic_response, status=status.HTTP_200_OK)
 
-def reset_password(request, token):
-    """
-    The page the emailed link opens. GET shows the new-password form, POST saves it.
-    This is a plain Django view rather than a DRF one because the reader is a
-    browser opening a link from their inbox, not the mobile app.
-    """
-    reset_entry = password_resets_collection.find_one({'token_hash': _hash_reset_token(token)})
-    expired_message = 'This reset link is invalid or has expired. Please request a new one.'
+@api_view(['POST'])
+def reset_password(request):
+    """Sets a new password once the emailed reset code is confirmed."""
+    data = request.data
+    email = normalize_email(data.get('email'))
+    new_password = data.get('new_password') or ''
 
-    # MongoDB clears expired documents on its own schedule, so check the time here too.
-    if not reset_entry or reset_entry['expires_at'] <= datetime.datetime.utcnow():
-        return render(
-            request,
-            'authentication/reset_password.html',
-            {'error': expired_message, 'link_dead': True},
-            status=400
-        )
+    if not email or not data.get('code'):
+        return Response({'error': 'Email and code are required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    if request.method != 'POST':
-        return render(request, 'authentication/reset_password.html', {'email': reset_entry['email']})
+    policy_error = password_policy_error(new_password)
+    if policy_error:
+        return Response({'error': policy_error}, status=status.HTTP_400_BAD_REQUEST)
 
-    new_password = request.POST.get('new_password') or ''
-    confirm_password = request.POST.get('confirm_password') or ''
+    code_error = check_code(email, PASSWORD_RESET, data.get('code'))
+    if code_error:
+        return Response({'error': code_error}, status=status.HTTP_400_BAD_REQUEST)
 
-    if len(new_password) < 6:
-        return render(
-            request,
-            'authentication/reset_password.html',
-            {'email': reset_entry['email'], 'error': 'Password must be at least 6 characters.'},
-            status=400
-        )
-
-    if new_password != confirm_password:
-        return render(
-            request,
-            'authentication/reset_password.html',
-            {'email': reset_entry['email'], 'error': 'The two passwords do not match.'},
-            status=400
-        )
-
-    user = users_collection.find_one({'email': reset_entry['email']})
+    user = users_collection.find_one({'email': email})
     if not user:
-        password_resets_collection.delete_one({'_id': reset_entry['_id']})
-        return render(
-            request,
-            'authentication/reset_password.html',
-            {'error': expired_message, 'link_dead': True},
-            status=400
-        )
+        return Response({'error': 'This code has expired. Please request a new one.'},
+                        status=status.HTTP_400_BAD_REQUEST)
 
     users_collection.update_one(
         {'_id': user['_id']},
-        {'$set': {'password': make_password(new_password)}}
+        {'$set': {'password': make_password(new_password),
+                  'password_encrypted': encrypt_password(new_password)}}
     )
-    # Burn the link so it cannot be replayed.
-    password_resets_collection.delete_one({'_id': reset_entry['_id']})
-
-    return render(request, 'authentication/reset_password.html', {'success': True})
+    return Response({'message': 'Your password has been changed. You can now log in.'}, status=status.HTTP_200_OK)
 
 @api_view(['GET'])
 def get_profile(request):
@@ -283,7 +257,7 @@ def get_profile(request):
     if not user_id:
         return Response({'error': 'Unauthorized access.'}, status=status.HTTP_401_UNAUTHORIZED)
 
-    user = users_collection.find_one({'_id': ObjectId(user_id)}, {'password': 0})
+    user = users_collection.find_one({'_id': ObjectId(user_id)}, {'password': 0, 'password_encrypted': 0})
     user['_id'] = str(user['_id'])
     return Response(user, status=status.HTTP_200_OK)
 

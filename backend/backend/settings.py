@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     'dashboard',
     'routines',
     'assistant',
+    'centre',
 ]
 
 MIDDLEWARE = [
@@ -143,7 +144,8 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 # Real emails go out once EMAIL_HOST_USER and EMAIL_HOST_PASSWORD are set in
 # backend/.env. Without them, we fall back to the console backend, which just
-# prints the message (reset link included) to the `manage.py runserver` terminal.
+# prints the message (with its sign-up / reset code) to the `manage.py runserver`
+# terminal, which is handy for testing but means no real Gmail receives it.
 EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
 EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
 EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True').lower() == 'true'
@@ -159,11 +161,11 @@ DEFAULT_FROM_EMAIL = os.getenv(
     'DEFAULT_FROM_EMAIL',
     EMAIL_HOST_USER or 'Voice Me <no-reply@voiceme.local>'
 )
+# Don't let a slow mail server hang the sign-up / reset request forever.
+EMAIL_TIMEOUT = 15
 
-# Host the emailed reset link should point at. Leave blank for local development
-# (the link is then built from the incoming request); set it to a reachable
-# address, e.g. http://192.168.1.5:8000, when testing from a real phone, since a
-# link to localhost or 10.0.2.2 means nothing inside an email client.
-PASSWORD_RESET_BASE_URL = os.getenv('PASSWORD_RESET_BASE_URL', '')
+# Centre admin panel (/centre/) signs staff in with Django's own accounts.
+LOGIN_URL = 'centre:login'
+LOGIN_REDIRECT_URL = 'centre:dashboard'
 
 CORS_ALLOW_ALL_ORIGINS = True

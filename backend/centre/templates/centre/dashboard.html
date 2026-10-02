@@ -1,0 +1,156 @@
+{% extends 'centre/base.html' %}
+{% block title %}Accounts · Voice Me Centre{% endblock %}
+{% block head %}
+<style>
+  .top { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+  .top > div:first-child { flex: 1; min-width: 240px; }
+  .top .sub { margin: 0; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 14px 16px; }
+  .stat b { display: block; font-size: 28px; line-height: 1.1; }
+  .stat span { color: var(--muted); font-size: 13px; }
+  .stat.warn b { color: var(--warn); }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  .filters .tab { padding: 6px 12px; border-radius: 999px; text-decoration: none; color: var(--text);
+    border: 1px solid var(--border); background: var(--surface); font-weight: 600; font-size: 14px; }
+  .filters .tab.on { background: var(--brand); border-color: var(--brand); color: var(--brand-text); }
+  .filters form { display: flex; gap: 8px; margin-left: auto; min-width: 260px; flex: 0 1 380px; }
+  .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; }
+  table { width: 100%; border-collapse: collapse; min-width: 1080px; }
+  th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); background: var(--surface-2); }
+  tr:last-child td { border-bottom: 0; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+  .badge.family { background: var(--ok-bg); color: var(--ok); }
+  .badge.caregiver { background: #E3ECFA; color: #1F4E8C; }
+  .badge.not_set_up { background: var(--warn-bg); color: var(--warn); }
+  @media (prefers-color-scheme: dark) { .badge.caregiver { background: #1B2A40; color: #9EC3F5; } }
+  code, .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  .code { font-size: 16px; font-weight: 700; letter-spacing: .12em; }
+  .pw { display: flex; align-items: center; gap: 6px; }
+  .pw code { background: var(--surface-2); padding: 2px 8px; border-radius: 6px; }
+  .actions { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+  details summary { cursor: pointer; list-style: none; }
+  details summary::-webkit-details-marker { display: none; }
+  details form { display: flex; gap: 6px; margin-top: 6px; }
+  details input { padding: 5px 8px; font-size: 13px; width: 150px; }
+  .empty { padding: 32px; text-align: center; color: var(--muted); }
+</style>
+{% endblock %}
+{% block content %}
+<div class="top">
+  <div>
+    <h1>Registered accounts</h1>
+    <p class="sub">Families (parent + child) and caregivers using Voice Me at this centre.</p>
+  </div>
+  <a class="btn btn-primary" href="{% url 'centre:create-account' %}">+ Create account</a>
+</div>
+
+<div class="stats">
+  <div class="stat"><b>{{ stats.total }}</b><span>Total accounts</span></div>
+  <div class="stat"><b>{{ stats.families }}</b><span>Families registered</span></div>
+  <div class="stat"><b>{{ stats.caregivers }}</b><span>Caregivers linked</span></div>
+  <div class="stat {% if stats.families_without_caregiver %}warn{% endif %}"><b>{{ stats.families_without_caregiver }}</b><span>Families with no caregiver</span></div>
+  <div class="stat {% if stats.not_set_up %}warn{% endif %}"><b>{{ stats.not_set_up }}</b><span>Signed up, not set up</span></div>
+</div>
+
+<div class="filters">
+  <a class="tab {% if not role %}on{% endif %}" href="?{% if query %}q={{ query|urlencode }}{% endif %}">All</a>
+  <a class="tab {% if role == 'family' %}on{% endif %}" href="?role=family{% if query %}&q={{ query|urlencode }}{% endif %}">Families</a>
+  <a class="tab {% if role == 'caregiver' %}on{% endif %}" href="?role=caregiver{% if query %}&q={{ query|urlencode }}{% endif %}">Caregivers</a>
+  <a class="tab {% if role == 'not_set_up' %}on{% endif %}" href="?role=not_set_up{% if query %}&q={{ query|urlencode }}{% endif %}">Not set up</a>
+  <form method="get">
+    {% if role %}<input type="hidden" name="role" value="{{ role }}">{% endif %}
+    <input type="search" name="q" value="{{ query }}" placeholder="Search name, email, child or code" aria-label="Search accounts">
+    <button class="btn" type="submit">Search</button>
+  </form>
+</div>
+
+<div class="table-wrap">
+  {% if rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>Account</th><th>Type</th><th>Password</th><th>Child</th><th>Connect code</th>
+        <th>Linked to</th><th>Registered</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>
+          <strong>{{ r.name|default:"(no name)" }}</strong><br>
+          <span class="mono">{{ r.email }}</span>
+          {% if r.parent_name and r.parent_name != r.name %}<div class="muted">Parent: {{ r.parent_name }}</div>{% endif %}
+        </td>
+        <td>
+          {% if r.role == 'family' %}<span class="badge family">Family</span>
+          {% elif r.role == 'caregiver' %}<span class="badge caregiver">Caregiver</span>
+          {% else %}<span class="badge not_set_up">Not set up</span>{% endif %}
+          {% if r.created_by_centre %}<div class="muted">Created by centre</div>
+          {% elif r.email_verified %}<div class="muted">Gmail verified</div>{% endif %}
+        </td>
+        <td>
+          {% if r.password %}
+            <div class="pw">
+              <code data-pw="{{ r.password }}">••••••••</code>
+              <button class="btn btn-sm" type="button" onclick="togglePw(this)">Show</button>
+            </div>
+          {% else %}
+            <span class="muted">Not stored yet. Shown after the user's next login, or set a new one.</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if r.child %}{{ r.child.name|default:"(no name)" }}{% if r.child.age %}<div class="muted">Age {{ r.child.age }}</div>{% endif %}
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td>
+          {% if r.role == 'family' and r.child.connect_code %}<span class="mono code">{{ r.child.connect_code }}</span>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td>
+          {% if r.role == 'family' %}
+            {% if r.caregiver_name %}{{ r.caregiver_name }}{% if r.caregiver_email %}<div class="muted mono">{{ r.caregiver_email }}</div>{% endif %}
+            {% else %}<span class="muted">No caregiver yet</span>{% endif %}
+          {% elif r.role == 'caregiver' %}
+            Child: {{ r.child.name|default:"(no name)" }}
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td class="muted">{{ r.created_at|date:"j M Y" }}</td>
+        <td>
+          <div class="actions">
+            <details>
+              <summary class="btn btn-sm">Change password</summary>
+              <form method="post" action="{% url 'centre:set-password' r.id %}">
+                {% csrf_token %}
+                <input type="text" name="new_password" maxlength="14" placeholder="New password" required aria-label="New password for {{ r.email }}">
+                <button class="btn btn-sm btn-primary" type="submit">Save</button>
+              </form>
+              <div class="muted" style="max-width:240px">8–14 characters with an uppercase, a lowercase and a special character.</div>
+            </details>
+            <form method="post" action="{% url 'centre:delete-account' r.id %}"
+                  onsubmit="return confirm('Delete {{ r.email|escapejs }}?{% if r.role == 'family' %} This also deletes the child profile, routine and SOS history.{% endif %} This cannot be undone.')">
+              {% csrf_token %}
+              <button class="btn btn-sm btn-danger" type="submit">Delete</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <div class="empty">{% if query or role %}No accounts match this filter.{% else %}No accounts yet. Families appear here once they sign up in the app.{% endif %}</div>
+  {% endif %}
+</div>
+
+<script>
+  function togglePw(button) {
+    const code = button.previousElementSibling;
+    const hidden = code.textContent === '••••••••';
+    code.textContent = hidden ? code.dataset.pw : '••••••••';
+    button.textContent = hidden ? 'Hide' : 'Show';
+  }
+</script>
+{% endblock %}

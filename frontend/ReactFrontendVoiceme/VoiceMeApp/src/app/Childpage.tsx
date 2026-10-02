@@ -16,6 +16,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Svg, { Path, Circle } from 'react-native-svg';
 import { API_BASE_URL } from '@/constants/api';
 import { dialPhone } from '@/constants/phone';
+import { ConnectCodeCard } from '@/components/connect-code-card';
 
 const AUTH_TOKEN_KEY = 'voiceme.authToken';
 const REGISTERED_NAME_KEY = 'voiceme.registeredName';
@@ -47,6 +48,7 @@ export const ChildProfileScreen: React.FC<ChildProfileProps> = ({
   const [updatedLabel, setUpdatedLabel] = useState('GPS band not connected');
   const [caregiverModalVisible, setCaregiverModalVisible] = useState(false);
   const [isCaregiverView, setIsCaregiverView] = useState(false);
+  const [connectCode, setConnectCode] = useState<string | null>(null);
 
   const loadProfile = useCallback(async () => {
     // Same fallback as Homepage: show the details saved on this device first,
@@ -77,6 +79,9 @@ export const ChildProfileScreen: React.FC<ChildProfileProps> = ({
       }
 
       const profile = await res.json();
+      // Only the parent's own /api/child/profile/ carries the connect code;
+      // a caregiver viewing via the dashboard doesn't see it.
+      setConnectCode(typeof profile.connect_code === 'string' ? profile.connect_code : null);
       if (profile.name?.trim()) setChildName(profile.name.trim());
       if (profile.age?.trim()) setChildAge(profile.age.trim());
       if (profile.avatar?.trim()) setAvatar(profile.avatar.trim());
@@ -167,6 +172,9 @@ export const ChildProfileScreen: React.FC<ChildProfileProps> = ({
             <Text style={styles.managedBy}>Profile managed by parent</Text>
           </View>
         </View>
+
+        {/* Caregiver connect code (parent/child account only) */}
+        {!isCaregiverView && <ConnectCodeCard code={connectCode} />}
 
         {/* Current Location Card */}
         <View style={styles.locationCard}>

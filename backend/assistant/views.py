@@ -1,7 +1,8 @@
+import tempfile
 from pathlib import Path
 
 from django.conf import settings
-from django.http import FileResponse, Http404
+from django.http import FileResponse, Http404, HttpResponse
 from backend.tts import synthesize
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -12,6 +13,7 @@ from dashboard.db import children_collection
 from routines.db import routines_collection
 from routines.services import apply_daily_reset, current_slot_index
 
+from . import ai
 from .rules import (
     DEFAULT_ROUTINE_SEQUENCE,
     EVERYDAY_NEEDS,
@@ -46,6 +48,17 @@ def _next_routine_item(items, current):
     return min(later, key=lambda i: i.get('slot_index', 0)) if later else None
 
 
+def _routine_sequence(title, age):
+    """
+    Gemini-written steps for this routine when AI is available, otherwise the
+    matching hand-written rule. Returns (items or None, 'ai' | 'rules').
+    """
+    sequence = ai.routine_sequence(title, age)
+    if sequence:
+        return sequence, 'ai'
+    return match_routine_sequence(title), 'rules'
+
+
 @api_view(['GET'])
 def contextual_flashcards(request):
     """
@@ -67,29 +80,35 @@ def contextual_flashcards(request):
         'needs_context': {'items': EVERYDAY_NEEDS},
     }
 
+    child = children_collection.find_one({'user_id': user_id})
+    child_age = (child or {}).get('age')
+
     routine_doc = apply_daily_reset(routines_collection.find_one({'user_id': user_id}))
     routine_items = (routine_doc or {}).get('items', [])
     current_item = _current_routine_item(routine_items)
     if current_item:
-        sequence = match_routine_sequence(current_item.get('title')) or DEFAULT_ROUTINE_SEQUENCE
+        sequence, source = _routine_sequence(current_item.get('title'), child_age)
         response_data['time_context'] = {
             'routine_title': current_item.get('title'),
             'time': current_item.get('time'),
-            'items': sequence,
+            'items': sequence or DEFAULT_ROUTINE_SEQUENCE,
+            'source': source,
         }
 
     # A heads-up for what's coming next helps with the transition between
     # activities; only shown when there's a specific sequence for it.
     next_item = _next_routine_item(routine_items, current_item)
-    next_sequence = match_routine_sequence(next_item.get('title')) if next_item else None
+    next_sequence, next_source = (
+        _routine_sequence(next_item.get('title'), child_age) if next_item else (None, None)
+    )
     if next_sequence:
         response_data['next_context'] = {
             'routine_title': next_item.get('title'),
             'time': next_item.get('time'),
             'items': next_sequence,
+            'source': next_source,
         }
 
-    child = children_collection.find_one({'user_id': user_id})
     gps = (child or {}).get('gps') or {}
     place_category = gps.get('place_category')
     sequence = LOCATION_STEP_SEQUENCES.get(place_category) if place_category else None
@@ -123,8 +142,21 @@ def contextual_flashcard_audio(request, step_id, lang):
     # Mirrors flashcards.views.flashcard_audio: text is only ever looked up
     # from the fixed dict above, never taken from the request, so this can't
     # be used to generate speech for arbitrary attacker-supplied text.
+    if lang not in ('ne', 'en'):
+        raise Http404('Unknown step or language.')
+
+    # AI-written steps carry their own text in a server-signed id, so the same
+    # rule holds: only text this server generated is ever spoken. They aren't
+    # saved anywhere, so their audio is made fresh and not cached on disk.
+    ai_step = ai.find_step(step_id)
+    if ai_step:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            audio_path = Path(tmp_dir) / 'step.mp3'
+            synthesize(ai_step[lang], lang, audio_path)
+            return HttpResponse(audio_path.read_bytes(), content_type='audio/mpeg')
+
     step = _ALL_STEPS.get(step_id)
-    if not step or lang not in ('ne', 'en'):
+    if not step:
         raise Http404('Unknown step or language.')
 
     TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)

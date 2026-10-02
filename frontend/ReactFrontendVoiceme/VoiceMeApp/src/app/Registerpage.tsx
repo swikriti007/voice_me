@@ -17,6 +17,18 @@ import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE_URL } from '@/constants/api';
 import { INVALID_EMAIL_MESSAGE, LAST_EMAIL_KEY, isValidGmail } from '@/constants/email';
+import { PASSWORD_MAX_LENGTH, PASSWORD_RULES_MESSAGE, isValidPassword } from '@/constants/password';
+import {
+    CHECK_INBOX_MESSAGE,
+    CODE_LENGTH,
+    CODE_REQUIRED_MESSAGE,
+    RESEND_COOLDOWN_SECONDS,
+    isValidCode,
+    retryAfterSeconds,
+    sanitizeCode,
+} from '@/constants/verification';
+import { PasswordChecklist } from '@/components/password-checklist';
+import { useCountdown } from '@/hooks/use-countdown';
 
 const REGISTERED_NAME_KEY = 'voiceme.registeredName';
 const REGISTERED_AGE_KEY = 'voiceme.registeredAge';
@@ -46,7 +58,64 @@ export default function CreateAccountScreen() {
     const [isPasswordVisible, setIsPasswordVisible] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [formError, setFormError] = useState('');
-    const [fieldErrors, setFieldErrors] = useState<{ name?: string; age?: string; email?: string; password?: string }>({});
+    const [fieldErrors, setFieldErrors] = useState<{ name?: string; age?: string; email?: string; password?: string; code?: string }>({});
+    // Email verification: a 6-digit code is emailed by /api/signup/send-code/
+    // and must be sent along with the create-account request.
+    const [code, setCode] = useState('');
+    const [codeSent, setCodeSent] = useState(false);
+    const [isSendingCode, setIsSendingCode] = useState(false);
+    const [codeInfo, setCodeInfo] = useState('');
+    const resendCountdown = useCountdown();
+
+    const resetCodeState = () => {
+        setCode('');
+        setCodeSent(false);
+        setCodeInfo('');
+        resendCountdown.reset();
+    };
+
+    const handleSendCode = async () => {
+        if (isSendingCode || resendCountdown.secondsLeft > 0) return;
+        setFormError('');
+        if (!email.trim()) {
+            setFieldErrors((prev) => ({ ...prev, email: 'कृपया आफ्नो इमेल प्रविष्ट गर्नुहोस् (Please enter your email)' }));
+            return;
+        }
+        if (!isValidGmail(email)) {
+            setFieldErrors((prev) => ({ ...prev, email: INVALID_EMAIL_MESSAGE }));
+            return;
+        }
+
+        setIsSendingCode(true);
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/signup/send-code/`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: email.trim() }),
+            });
+            const data = await response.json().catch(() => ({}));
+
+            if (response.status === 429) {
+                resendCountdown.start(retryAfterSeconds(data));
+                setFormError(data?.error || 'Please wait before requesting another code.');
+                return;
+            }
+            if (!response.ok) {
+                setFieldErrors((prev) => ({ ...prev, email: data?.error || 'Unable to send the code right now.' }));
+                return;
+            }
+
+            setCodeSent(true);
+            setCodeInfo(data?.message || '');
+            setFieldErrors((prev) => ({ ...prev, code: undefined }));
+            resendCountdown.start(RESEND_COOLDOWN_SECONDS);
+        } catch (error: any) {
+            console.error('Send code request failed:', error);
+            setFormError('Unable to reach the server. Please check your connection and try again.');
+        } finally {
+            setIsSendingCode(false);
+        }
+    };
 
     const handleContinue = async () => {
         setFormError('');
@@ -65,8 +134,13 @@ export default function CreateAccountScreen() {
         } else if (!isValidGmail(email)) {
             errors.email = INVALID_EMAIL_MESSAGE;
         }
-        if (!password || password.length < 6) {
-            errors.password = 'पासवर्ड कम्तिमा ६ अक्षरको हुनुपर्छ (Password must be at least 6 characters)';
+        if (!isValidPassword(password)) {
+            errors.password = PASSWORD_RULES_MESSAGE;
+        }
+        if (!codeSent) {
+            errors.code = 'पहिले इमेलमा कोड पठाउनुहोस् (Tap "Send code" to verify your email first)';
+        } else if (!isValidCode(code)) {
+            errors.code = CODE_REQUIRED_MESSAGE;
         }
 
         setFieldErrors(errors);
@@ -93,6 +167,7 @@ export default function CreateAccountScreen() {
                     age: Number(age),
                     email: email.trim(),
                     password,
+                    code: code.trim(),
                 }),
             });
 
@@ -100,7 +175,11 @@ export default function CreateAccountScreen() {
 
             if (!response.ok) {
                 const message = data?.error || 'Unable to create account right now.';
-                if (/email/i.test(message)) {
+                if (/code/i.test(message)) {
+                    setFieldErrors((prev) => ({ ...prev, code: message }));
+                } else if (/password/i.test(message)) {
+                    setFieldErrors((prev) => ({ ...prev, password: message }));
+                } else if (/email/i.test(message)) {
                     setFieldErrors((prev) => ({ ...prev, email: message }));
                 } else {
                     setFormError(message);
@@ -219,6 +298,8 @@ export default function CreateAccountScreen() {
                                     value={email}
                                     onChangeText={(text) => {
                                         setEmail(text);
+                                        // A code was sent to the old address; it won't verify a new one.
+                                        if (codeSent && text.trim() !== email.trim()) resetCodeState();
                                         if (fieldErrors.email) setFieldErrors((prev) => ({ ...prev, email: undefined }));
                                     }}
                                     keyboardType="email-address"
@@ -227,7 +308,60 @@ export default function CreateAccountScreen() {
                                 />
                             </View>
                             {fieldErrors.email ? <Text style={styles.fieldErrorText}>{fieldErrors.email}</Text> : null}
+
+                            {/* Send verification code */}
+                            <Pressable
+                                style={({ pressed }) => [
+                                    styles.sendCodeButton,
+                                    pressed && styles.continueButtonPressed,
+                                    (isSendingCode || resendCountdown.secondsLeft > 0) && styles.sendCodeButtonDisabled,
+                                ]}
+                                onPress={() => void handleSendCode()}
+                                disabled={isSendingCode || resendCountdown.secondsLeft > 0}
+                            >
+                                {isSendingCode ? (
+                                    <ActivityIndicator color="#FFFFFF" size="small" />
+                                ) : (
+                                    <Text style={styles.sendCodeButtonText}>
+                                        {resendCountdown.secondsLeft > 0
+                                            ? `फेरि पठाउन ${resendCountdown.secondsLeft}s (Resend in ${resendCountdown.secondsLeft}s)`
+                                            : codeSent
+                                                ? 'कोड फेरि पठाउनुहोस् (Resend code)'
+                                                : 'कोड पठाउनुहोस् (Send code)'}
+                                    </Text>
+                                )}
+                            </Pressable>
                         </View>
+
+                        {/* Field 3b: Verification code (after it has been emailed) */}
+                        {codeSent ? (
+                            <View style={styles.inputGroup}>
+                                <Text style={styles.fieldLabel}>प्रमाणीकरण कोड (Verification code)</Text>
+                                <View style={[styles.inputPill, fieldErrors.code && styles.inputPillError]}>
+                                    <View style={styles.iconWrapper}>
+                                        <Text style={styles.ageIcon}>#</Text>
+                                    </View>
+                                    <TextInput
+                                        style={[styles.textInput, styles.codeInput]}
+                                        placeholder="123456"
+                                        placeholderTextColor="#7C5044"
+                                        value={code}
+                                        onChangeText={(text) => {
+                                            setCode(sanitizeCode(text));
+                                            if (fieldErrors.code) setFieldErrors((prev) => ({ ...prev, code: undefined }));
+                                        }}
+                                        keyboardType="number-pad"
+                                        maxLength={CODE_LENGTH}
+                                        autoCorrect={false}
+                                    />
+                                </View>
+                                {codeInfo ? <Text style={styles.helperText}>{codeInfo}</Text> : null}
+                                <Text style={styles.helperText}>{CHECK_INBOX_MESSAGE}</Text>
+                                {fieldErrors.code ? <Text style={styles.fieldErrorText}>{fieldErrors.code}</Text> : null}
+                            </View>
+                        ) : fieldErrors.code ? (
+                            <Text style={[styles.fieldErrorText, styles.codeRequiredError]}>{fieldErrors.code}</Text>
+                        ) : null}
 
                         {/* Field 4: Password */}
                         <View style={styles.inputGroup}>
@@ -249,6 +383,7 @@ export default function CreateAccountScreen() {
                                     }}
                                     secureTextEntry={!isPasswordVisible}
                                     autoCapitalize="none"
+                                    maxLength={PASSWORD_MAX_LENGTH}
                                 />
                                 <TouchableOpacity
                                     onPress={() => setIsPasswordVisible(!isPasswordVisible)}
@@ -261,6 +396,7 @@ export default function CreateAccountScreen() {
                                     </Text>
                                 </TouchableOpacity>
                             </View>
+                            <PasswordChecklist password={password} />
                             {fieldErrors.password ? <Text style={styles.fieldErrorText}>{fieldErrors.password}</Text> : null}
                         </View>
 
@@ -393,6 +529,40 @@ const styles = StyleSheet.create({
         fontWeight: '600',
         marginTop: 6,
         marginLeft: 18,
+    },
+    helperText: {
+        color: '#7C5044',
+        fontSize: 12,
+        lineHeight: 17,
+        marginTop: 6,
+        marginLeft: 18,
+    },
+    sendCodeButton: {
+        alignSelf: 'flex-start',
+        backgroundColor: '#26533A',
+        borderRadius: 20,
+        paddingVertical: 9,
+        paddingHorizontal: 16,
+        marginTop: 10,
+        marginLeft: 12,
+        minHeight: 38,
+        justifyContent: 'center',
+    },
+    sendCodeButtonDisabled: {
+        opacity: 0.6,
+    },
+    sendCodeButtonText: {
+        color: '#FFFFFF',
+        fontSize: 13,
+        fontWeight: '700',
+    },
+    codeInput: {
+        letterSpacing: 6,
+        fontWeight: '700',
+    },
+    codeRequiredError: {
+        marginTop: -8,
+        marginBottom: 14,
     },
     iconWrapper: {
         width: 22,

@@ -1,0 +1,20 @@
+{% extends 'centre/base.html' %}
+{% block title %}Sign in · Voice Me Centre{% endblock %}
+{% block content %}
+<div class="card" style="max-width:400px;margin:40px auto">
+  <h1>Centre sign in</h1>
+  <p class="sub">For autism centre staff only. Parents and caregivers sign in from the Voice Me app.</p>
+  {% if form.errors %}
+    <ul class="messages">{% for error in form.non_field_errors %}<li class="error">{{ error }}</li>{% endfor %}</ul>
+  {% endif %}
+  <form method="post">
+    {% csrf_token %}
+    <label for="id_username">Username</label>
+    <input id="id_username" name="username" autocomplete="username" required autofocus value="{{ form.username.value|default:'' }}">
+    <label for="id_password">Password</label>
+    <input id="id_password" name="password" type="password" autocomplete="current-password" required>
+    <input type="hidden" name="next" value="{{ next }}">
+    <div style="margin-top:20px"><button class="btn btn-primary" type="submit">Sign in</button></div>
+  </form>
+</div>
+{% endblock %}

@@ -17,6 +17,18 @@ import * as Haptics from "expo-haptics";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { API_BASE_URL } from '@/constants/api';
 import { INVALID_EMAIL_MESSAGE, LAST_EMAIL_KEY, isValidGmail } from '@/constants/email';
+import { PASSWORD_MAX_LENGTH, PASSWORD_RULES_MESSAGE, isValidPassword } from '@/constants/password';
+import {
+  CHECK_INBOX_MESSAGE,
+  CODE_LENGTH,
+  CODE_REQUIRED_MESSAGE,
+  RESEND_COOLDOWN_SECONDS,
+  isValidCode,
+  retryAfterSeconds,
+  sanitizeCode,
+} from '@/constants/verification';
+import { PasswordChecklist } from '@/components/password-checklist';
+import { useCountdown } from '@/hooks/use-countdown';
 
 const AUTH_TOKEN_KEY = "voiceme.authToken";
 const AUTH_USER_KEY = "voiceme.user";
@@ -27,6 +39,32 @@ export default function CaregiverRegistrationPage() {
   const [password, setPassword] = useState("");
   const [phone, setPhone] = useState("");
   const [connectCode, setConnectCode] = useState("");
+
+  // Email verification for the new account: /api/signup/send-code/ emails a
+  // 6-digit code that create-account requires. If the email already has an
+  // account, no code is needed — we sign in with it and link it instead.
+  const [code, setCode] = useState("");
+  const [codeSent, setCodeSent] = useState(false);
+  const [accountExists, setAccountExists] = useState(false);
+  const [isSendingCode, setIsSendingCode] = useState(false);
+  const [codeInfo, setCodeInfo] = useState("");
+  const [codeError, setCodeError] = useState("");
+  const resendCountdown = useCountdown();
+
+  const resetCodeState = () => {
+    setCode("");
+    setCodeSent(false);
+    setAccountExists(false);
+    setCodeInfo("");
+    setCodeError("");
+    resendCountdown.reset();
+  };
+
+  const handleEmailChange = (text: string) => {
+    // A code sent to the old address won't verify a new one.
+    if ((codeSent || accountExists) && text.trim() !== email.trim()) resetCodeState();
+    setEmail(text);
+  };
 
   const [dialogInfo, setDialogInfo] = useState<{
     visible: boolean;
@@ -81,6 +119,68 @@ export default function CaregiverRegistrationPage() {
 
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const handleSendCode = async () => {
+    if (isSendingCode || resendCountdown.secondsLeft > 0) return;
+    setCodeError("");
+    if (!isValidGmail(email)) {
+      setDialogInfo({
+        visible: true,
+        titleNe: "अमान्य इमेल",
+        titleEn: "Invalid Email",
+        message: INVALID_EMAIL_MESSAGE,
+      });
+      return;
+    }
+
+    setIsSendingCode(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/signup/send-code/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 429) {
+        resendCountdown.start(retryAfterSeconds(data));
+        setCodeError(data?.error || "Please wait before requesting another code.");
+        return;
+      }
+      if (!res.ok) {
+        if (/already exists/i.test(data?.error || "")) {
+          // Existing account: sign in with its password and link it instead.
+          setAccountExists(true);
+          setCodeSent(false);
+          setCodeInfo(
+            "यो इमेलको खाता पहिल्यै छ — त्यही पासवर्ड राखेर अघि बढ्नुहोस्\n(This email already has an account — enter its password to sign in and link it)"
+          );
+          return;
+        }
+        setDialogInfo({
+          visible: true,
+          titleNe: "कोड पठाउन सकिएन",
+          titleEn: "Could Not Send Code",
+          message: data?.error || "Unable to send the code right now.",
+        });
+        return;
+      }
+
+      setAccountExists(false);
+      setCodeSent(true);
+      setCodeInfo(data?.message || "");
+      resendCountdown.start(RESEND_COOLDOWN_SECONDS);
+    } catch {
+      setDialogInfo({
+        visible: true,
+        titleNe: "सर्भरमा पुग्न सकिएन",
+        titleEn: "Could Not Reach Server",
+        message: "इन्टरनेट जडान जाँच गरेर फेरि प्रयास गर्नुहोस्\n(Please check your connection and try again)",
+      });
+    } finally {
+      setIsSendingCode(false);
+    }
+  };
+
   // Account creation (and the login fallback) each spend about a second
   // hashing the password server-side, so show progress and ignore extra
   // taps instead of looking frozen.
@@ -113,6 +213,30 @@ export default function CaregiverRegistrationPage() {
         message: INVALID_EMAIL_MESSAGE,
       });
       return;
+    }
+
+    if (!accountExists) {
+      if (!codeSent || !isValidCode(code)) {
+        setDialogInfo({
+          visible: true,
+          titleNe: "इमेल प्रमाणीकरण",
+          titleEn: "Verify Your Email",
+          message: codeSent
+            ? CODE_REQUIRED_MESSAGE
+            : 'पहिले "कोड पठाउनुहोस्" थिचेर इमेल प्रमाणित गर्नुहोस्\n(Tap "Send code" to verify your email first)',
+        });
+        return;
+      }
+
+      if (!isValidPassword(password)) {
+        setDialogInfo({
+          visible: true,
+          titleNe: "कमजोर पासवर्ड",
+          titleEn: "Password Too Weak",
+          message: PASSWORD_RULES_MESSAGE,
+        });
+        return;
+      }
     }
 
     if (!connectCode.trim()) {
@@ -149,19 +273,9 @@ export default function CaregiverRegistrationPage() {
       // caregiver's own login is never created.
       let token: string | null = null;
       let user: any = { name: name.trim(), email: email.trim() };
+      let serverError = "";
 
-      const createRes = await fetch(`${API_BASE_URL}/api/create-account/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), email: email.trim(), password }),
-      });
-      const createData = await createRes.json().catch(() => ({}));
-
-      if (createRes.ok) {
-        token = createData.token;
-        if (createData?.user) user = createData.user;
-      } else if (/email/i.test(createData?.error || "")) {
-        // Account already exists (e.g. re-registering on this device) - log in instead.
+      const loginExisting = async () => {
         const loginRes = await fetch(`${API_BASE_URL}/api/login/`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -171,6 +285,29 @@ export default function CaregiverRegistrationPage() {
         if (loginRes.ok) {
           token = loginData.token;
           if (loginData?.user) user = loginData.user;
+        } else {
+          serverError = loginData?.error || "";
+        }
+      };
+
+      if (accountExists) {
+        // Account already exists (e.g. re-registering on this device) - log in instead.
+        await loginExisting();
+      } else {
+        const createRes = await fetch(`${API_BASE_URL}/api/create-account/`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: name.trim(), email: email.trim(), password, code: code.trim() }),
+        });
+        const createData = await createRes.json().catch(() => ({}));
+
+        if (createRes.ok) {
+          token = createData.token;
+          if (createData?.user) user = createData.user;
+        } else if (/already exists/i.test(createData?.error || "")) {
+          await loginExisting();
+        } else {
+          serverError = createData?.error || "";
         }
       }
 
@@ -186,7 +323,7 @@ export default function CaregiverRegistrationPage() {
           visible: true,
           titleNe: "खाता सिर्जना गर्न सकिएन",
           titleEn: "Could Not Create Account",
-          message: "कृपया इमेल/पासवर्ड जाँच गरेर फेरि प्रयास गर्नुहोस्\n(Please check your email/password and try again)",
+          message: serverError || "कृपया इमेल/पासवर्ड जाँच गरेर फेरि प्रयास गर्नुहोस्\n(Please check your email/password and try again)",
         });
         return;
       }
@@ -308,7 +445,7 @@ export default function CaregiverRegistrationPage() {
                   <TextInput
                     style={styles.textInput}
                     value={email}
-                    onChangeText={setEmail}
+                    onChangeText={handleEmailChange}
                     placeholder="name@email.com"
                     placeholderTextColor="#7C6356"
                     keyboardType="email-address"
@@ -317,7 +454,57 @@ export default function CaregiverRegistrationPage() {
                     returnKeyType="next"
                   />
                 </View>
+
+                {/* Send verification code */}
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.sendCodeButton,
+                    pressed && styles.buttonPressed,
+                    (isSendingCode || resendCountdown.secondsLeft > 0) && styles.sendCodeButtonDisabled,
+                  ]}
+                  onPress={() => void handleSendCode()}
+                  disabled={isSendingCode || resendCountdown.secondsLeft > 0}
+                >
+                  {isSendingCode ? (
+                    <ActivityIndicator color="#FFFFFF" size="small" />
+                  ) : (
+                    <Text style={styles.sendCodeButtonText}>
+                      {resendCountdown.secondsLeft > 0
+                        ? `फेरि पठाउन ${resendCountdown.secondsLeft}s (Resend in ${resendCountdown.secondsLeft}s)`
+                        : codeSent
+                          ? "कोड फेरि पठाउनुहोस् (Resend code)"
+                          : "कोड पठाउनुहोस् (Send code)"}
+                    </Text>
+                  )}
+                </Pressable>
+                {codeError ? <Text style={styles.errorText}>{codeError}</Text> : null}
+                {accountExists && codeInfo ? <Text style={styles.helperText}>{codeInfo}</Text> : null}
               </View>
+
+              {/* Verification code (after it has been emailed) */}
+              {codeSent && (
+                <View style={styles.inputGroup}>
+                  <Text style={styles.label}>प्रमाणीकरण कोड (Verification Code)</Text>
+
+                  <View style={styles.inputPill}>
+                    <Text style={styles.inputIcon}>🔢</Text>
+
+                    <TextInput
+                      style={[styles.textInput, styles.codeInput]}
+                      value={code}
+                      onChangeText={(text) => setCode(sanitizeCode(text))}
+                      placeholder="123456"
+                      placeholderTextColor="#7C6356"
+                      keyboardType="number-pad"
+                      maxLength={CODE_LENGTH}
+                      autoCorrect={false}
+                      returnKeyType="next"
+                    />
+                  </View>
+                  {codeInfo ? <Text style={styles.helperText}>{codeInfo}</Text> : null}
+                  <Text style={styles.helperText}>{CHECK_INBOX_MESSAGE}</Text>
+                </View>
+              )}
 
               {/* Password */}
               <View style={styles.inputGroup}>
@@ -335,8 +522,10 @@ export default function CaregiverRegistrationPage() {
                     secureTextEntry
                     autoCapitalize="none"
                     returnKeyType="done"
+                    maxLength={accountExists ? undefined : PASSWORD_MAX_LENGTH}
                   />
                 </View>
+                {!accountExists && <PasswordChecklist password={password} />}
               </View>
 
               {/* Phone */}
@@ -584,6 +773,40 @@ const styles = StyleSheet.create({
     marginTop: 6,
     marginLeft: 4,
     lineHeight: 15,
+  },
+
+  sendCodeButton: {
+    alignSelf: "flex-start",
+    backgroundColor: "#235237",
+    borderRadius: 20,
+    paddingVertical: 9,
+    paddingHorizontal: 16,
+    marginTop: 10,
+    marginLeft: 4,
+    minHeight: 38,
+    justifyContent: "center",
+  },
+
+  sendCodeButtonDisabled: {
+    opacity: 0.6,
+  },
+
+  sendCodeButtonText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+
+  codeInput: {
+    letterSpacing: 6,
+  },
+
+  errorText: {
+    fontSize: 12,
+    color: "#C0392B",
+    fontWeight: "600",
+    marginTop: 6,
+    marginLeft: 4,
   },
 
   continueButton: {

@@ -15,6 +15,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import * as Haptics from 'expo-haptics';
 import { API_BASE_URL } from '@/constants/api';
+import { EmojiPicture } from '@/components/emoji-picture';
 
 const AUTH_TOKEN_KEY = 'voiceme.authToken';
 
@@ -60,6 +61,20 @@ const TEST_LOCATIONS: { category: string; label: string; icon: string }[] = [
     { category: 'library', label: 'Library', icon: '📚' },
 ];
 
+// Same "08:30 AM" shape the backend uses for routine times, built by hand so
+// it reads identically on web, iOS and Android regardless of device locale.
+const formatClock = (date: Date): string => {
+    const hours12 = date.getHours() % 12 || 12;
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    return `${String(hours12).padStart(2, '0')}:${minutes} ${date.getHours() < 12 ? 'AM' : 'PM'}`;
+};
+
+// The backend picks the current routine by 30-minute slot, so the cards only
+// need re-fetching when the clock crosses into a new slot.
+const slotIndex = (date: Date): number => date.getHours() * 2 + (date.getMinutes() >= 30 ? 1 : 0);
+
+const CLOCK_TICK_MS = 15000;
+
 export default function AIFlashcardsPage() {
     const [lang, setLang] = useState<Language>('ne');
     const [timeContext, setTimeContext] = useState<TimeContext | null>(null);
@@ -73,6 +88,7 @@ export default function AIFlashcardsPage() {
     const [loading, setLoading] = useState(true);
     const [simulating, setSimulating] = useState<string | null>(null);
     const [playingId, setPlayingId] = useState<string | null>(null);
+    const [now, setNow] = useState(() => new Date());
 
     const player = useAudioPlayer(null);
     const playerStatus = useAudioPlayerStatus(player);
@@ -115,6 +131,20 @@ export default function AIFlashcardsPage() {
     useFocusEffect(
         useCallback(() => {
             loadContext();
+
+            // Keep the clock live while this screen is open, and move on to
+            // the next routine as soon as its time slot starts.
+            let lastSlot = slotIndex(new Date());
+            setNow(new Date());
+            const interval = setInterval(() => {
+                const current = new Date();
+                setNow(current);
+                if (slotIndex(current) !== lastSlot) {
+                    lastSlot = slotIndex(current);
+                    loadContext();
+                }
+            }, CLOCK_TICK_MS);
+            return () => clearInterval(interval);
         }, [loadContext])
     );
 
@@ -202,9 +232,11 @@ export default function AIFlashcardsPage() {
                         onPress={() => handlePlayStep(step)}
                     >
                         <Text style={styles.stepIndex}>{index + 1}</Text>
-                        <Text style={styles.stepIcon}>{step.icon}</Text>
+                        <View style={styles.stepPicture}>
+                            <EmojiPicture emoji={step.icon} size={120} />
+                        </View>
                         <View style={styles.stepTextBlock}>
-                            <Text style={styles.stepTitle} numberOfLines={1}>
+                            <Text style={styles.stepTitle} numberOfLines={2}>
                                 {lang === 'ne' ? step.ne : step.en}
                             </Text>
                             <Text style={styles.stepDesc} numberOfLines={2}>
@@ -241,7 +273,7 @@ export default function AIFlashcardsPage() {
                         ]}
                         onPress={() => handlePlayStep(step)}
                     >
-                        <Text style={styles.needIcon}>{step.icon}</Text>
+                        <EmojiPicture emoji={step.icon} size={72} />
                         <Text style={styles.needTitle} numberOfLines={2}>
                             {lang === 'ne' ? step.ne : step.en}
                         </Text>
@@ -294,7 +326,10 @@ export default function AIFlashcardsPage() {
                         <Text style={styles.sectionLabel}>⏰ अहिलेको समय (Right now)</Text>
                         {timeContext ? (
                             <>
-                                <Text style={styles.sectionMeta}>{timeContext.time} · {timeContext.routine_title}</Text>
+                                <Text style={styles.sectionMeta}>
+                                    {formatClock(now)} · {timeContext.routine_title}
+                                    {timeContext.time ? ` · since ${timeContext.time}` : ''}
+                                </Text>
                                 {renderSteps(timeContext.items)}
                             </>
                         ) : (
@@ -363,6 +398,8 @@ export default function AIFlashcardsPage() {
                             {renderNeeds(needsContext.items)}
                         </View>
                     )}
+
+                    <Text style={styles.pictureCredit}>Pictures: Twemoji (CC-BY 4.0)</Text>
                 </ScrollView>
             )}
         </SafeAreaView>
@@ -408,41 +445,60 @@ const styles = StyleSheet.create({
     sectionLabel: { fontSize: 15, fontWeight: '800', color: '#342419' },
     sectionMeta: { marginTop: 4, fontSize: 13, fontWeight: '600', color: '#8C461F' },
     emptyHint: { marginTop: 10, fontSize: 13, color: '#76675B', lineHeight: 19 },
-    stepList: { marginTop: 12, gap: 8 },
+    stepList: { marginTop: 12, gap: 12 },
+    // The picture is the card: large and centred so a child can recognise the
+    // step at a glance, with the number and speaker tucked into the corners.
     stepCard: {
-        flexDirection: 'row',
-        alignItems: 'flex-start',
+        alignItems: 'center',
         backgroundColor: '#F5EFE6',
-        borderRadius: 16,
-        paddingVertical: 12,
-        paddingHorizontal: 12,
+        borderRadius: 18,
+        paddingTop: 16,
+        paddingBottom: 14,
+        paddingHorizontal: 14,
         borderWidth: 1,
         borderColor: '#E7DDD0',
     },
     stepCardActive: { backgroundColor: '#EEF4E9', borderColor: '#C6DBC3' },
     stepIndex: {
-        width: 20,
-        fontSize: 12,
+        position: 'absolute',
+        top: 10,
+        left: 12,
+        minWidth: 28,
+        height: 28,
+        borderRadius: 14,
+        overflow: 'hidden',
+        backgroundColor: '#FFFDF8',
+        textAlign: 'center',
+        lineHeight: 28,
+        fontSize: 14,
         fontWeight: '800',
-        color: '#A5937F',
-        marginTop: 2,
+        color: '#8C461F',
     },
-    stepIcon: { fontSize: 22, marginRight: 10 },
-    stepTextBlock: { flex: 1, marginRight: 8 },
-    stepTitle: { fontSize: 15, fontWeight: '800', color: '#342419' },
-    stepDesc: { marginTop: 3, fontSize: 12.5, color: '#5B4E44', lineHeight: 17 },
-    stepDescEn: { marginTop: 2, fontSize: 11.5, color: '#8A786C', fontStyle: 'italic', lineHeight: 16 },
-    speakerBadge: {
-        width: 30,
-        height: 30,
-        borderRadius: 15,
+    stepPicture: {
+        width: 148,
+        height: 148,
+        borderRadius: 24,
+        backgroundColor: '#FFFDF8',
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: 'rgba(0,0,0,0.04)',
-        marginTop: 1,
+    },
+    stepTextBlock: { alignSelf: 'stretch', marginTop: 12, alignItems: 'center' },
+    stepTitle: { fontSize: 20, fontWeight: '800', color: '#342419', textAlign: 'center' },
+    stepDesc: { marginTop: 4, fontSize: 13.5, color: '#5B4E44', lineHeight: 19, textAlign: 'center' },
+    stepDescEn: { marginTop: 2, fontSize: 12.5, color: '#8A786C', fontStyle: 'italic', lineHeight: 17, textAlign: 'center' },
+    speakerBadge: {
+        position: 'absolute',
+        top: 10,
+        right: 12,
+        width: 36,
+        height: 36,
+        borderRadius: 18,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: 'rgba(0,0,0,0.05)',
     },
     speakerBadgeActive: { backgroundColor: 'rgba(83, 110, 80, 0.2)' },
-    speakerIcon: { fontSize: 14 },
+    speakerIcon: { fontSize: 17 },
     testLocationRow: {
         marginTop: 14,
         flexDirection: 'row',
@@ -477,12 +533,12 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         backgroundColor: '#F5EFE6',
         borderRadius: 16,
-        paddingVertical: 12,
+        paddingVertical: 14,
         paddingHorizontal: 8,
         borderWidth: 1,
         borderColor: '#E7DDD0',
     },
-    needIcon: { fontSize: 28 },
-    needTitle: { marginTop: 6, fontSize: 14.5, fontWeight: '800', color: '#342419', textAlign: 'center' },
+    needTitle: { marginTop: 8, fontSize: 15.5, fontWeight: '800', color: '#342419', textAlign: 'center' },
+    pictureCredit: { marginTop: 4, fontSize: 10.5, color: '#A39486', textAlign: 'center' },
     needSub: { marginTop: 2, fontSize: 11.5, color: '#8A786C', textAlign: 'center' },
 });

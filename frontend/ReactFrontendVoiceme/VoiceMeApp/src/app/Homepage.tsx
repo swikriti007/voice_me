@@ -18,6 +18,8 @@ import Svg, { Path, Rect, Circle, Line, Polyline } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import * as Speech from 'expo-speech';
 import { API_BASE_URL } from '@/constants/api';
+import { clearSession } from '@/constants/session';
+import { ConnectCodeCard } from '@/components/connect-code-card';
 
 const REGISTERED_NAME_KEY = 'voiceme.registeredName';
 const REGISTERED_AGE_KEY = 'voiceme.registeredAge';
@@ -55,6 +57,8 @@ export default function Homepage({
   const [sosModalVisible, setSosModalVisible] = useState(false);
   const [gpsStatus, setGpsStatus] = useState<GPSStatus | null>(null);
   const [routineSummary, setRoutineSummary] = useState<{ done: number; total: number } | null>(null);
+  // Code the parent shares so a caregiver can link to this child.
+  const [connectCode, setConnectCode] = useState<string | null>(null);
 
   const loadUserData = useCallback(() => {
     AsyncStorage.multiGet([REGISTERED_NAME_KEY, REGISTERED_AGE_KEY, REGISTERED_AVATAR_KEY])
@@ -86,7 +90,9 @@ export default function Homepage({
         if (profile.age?.trim()) setRegisteredAge(profile.age.trim());
         if (profile.avatar?.trim()) setRegisteredAvatar(profile.avatar.trim());
         if (profile.gps) setGpsStatus(profile.gps);
+        setConnectCode(typeof profile.connect_code === 'string' ? profile.connect_code : null);
       } else if (profileRes.status === 404) {
+        setConnectCode(null);
         // No child of its own: if this account is a caregiver linked by
         // connect code (e.g. a session from before the role was remembered),
         // it belongs on the caregiver dashboard, not the child's home.
@@ -320,6 +326,9 @@ export default function Homepage({
           {/* Active status indicator dot */}
           <View style={[styles.statusDot, !gpsStatus?.connected && styles.statusDotInactive]} />
         </View>
+
+        {/* Caregiver connect code (hidden when this account has no child profile) */}
+        <ConnectCodeCard code={connectCode} />
 
         {/* 3. 2x2 Feature Cards Grid */}
         <View style={styles.grid}>
@@ -686,9 +695,11 @@ export default function Homepage({
 
             <Pressable
               style={styles.menuItem}
-              onPress={() => {
+              onPress={async () => {
                 setMenuVisible(false);
-                router.push('/Loginpage');
+                // Going to Login signs out, so Back can't return to this dashboard.
+                await clearSession().catch(() => { });
+                router.replace('/Loginpage');
               }}
             >
               <Text style={styles.menuItemText}>🔑 लगइन पृष्ठ (Login Page)</Text>
@@ -696,9 +707,10 @@ export default function Homepage({
 
             <Pressable
               style={styles.menuItem}
-              onPress={() => {
+              onPress={async () => {
                 setMenuVisible(false);
-                router.push('/Splashpage');
+                await clearSession().catch(() => { });
+                router.replace('/Splashpage');
               }}
             >
               <Text style={styles.menuItemText}>✨ स्प्लास पृष्ठ (Splash Screen)</Text>

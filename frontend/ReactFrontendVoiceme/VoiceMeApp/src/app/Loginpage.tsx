@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -11,11 +11,11 @@ import {
   Platform,
   ActivityIndicator,
 } from "react-native";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE_URL } from '@/constants/api';
 import { INVALID_EMAIL_MESSAGE, LAST_EMAIL_KEY, isValidGmail } from '@/constants/email';
-import { CACHED_PROFILE_KEYS } from '@/constants/session';
+import { CACHED_PROFILE_KEYS, clearSession } from '@/constants/session';
 
 const AUTH_TOKEN_KEY = 'voiceme.authToken';
 const AUTH_USER_KEY = 'voiceme.user';
@@ -47,6 +47,18 @@ export default function Loginpage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<{ email?: string; password?: string }>({});
+
+  // Reaching Login (via Back, a menu item, Splash, ...) means signing out:
+  // clear the token, user, role and cached profile so Back can't return to the
+  // previous dashboard. LAST_EMAIL_KEY is kept so the email stays pre-filled.
+  // This runs only when the screen gains focus; handleLogin waits for it to
+  // finish before saving the new session, so it never wipes a fresh login.
+  const clearingSession = useRef<Promise<unknown>>(Promise.resolve());
+  useFocusEffect(
+    useCallback(() => {
+      clearingSession.current = clearSession().catch(() => {});
+    }, [])
+  );
 
   // Pre-fill the last email used on this device; the password is always typed.
   useEffect(() => {
@@ -94,6 +106,7 @@ export default function Loginpage() {
         return;
       }
 
+      await clearingSession.current;
       await persistAuthSession(data.token, data.user || { email: email.trim() });
 
       // A caregiver account is one linked to a child via a connect code;

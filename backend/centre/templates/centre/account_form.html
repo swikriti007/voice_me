@@ -1,0 +1,59 @@
+{% extends 'centre/base.html' %}
+{% block title %}Create account · Voice Me Centre{% endblock %}
+{% block content %}
+<p style="margin:0 0 12px"><a href="{% url 'centre:dashboard' %}">← All accounts</a></p>
+<div class="card" style="max-width:560px">
+  <h1>Create account</h1>
+  <p class="sub">Register a family or caregiver directly. They can sign in to the app straight away with this Gmail and password.</p>
+  <form method="post">
+    {% csrf_token %}
+    <label for="role">Account type</label>
+    <select id="role" name="role" onchange="showRoleFields()">
+      <option value="family" {% if form.role == 'family' %}selected{% endif %}>Family (parent + child)</option>
+      <option value="caregiver" {% if form.role == 'caregiver' %}selected{% endif %}>Caregiver</option>
+    </select>
+
+    <label for="name" id="name-label">Parent's name</label>
+    <input id="name" name="name" value="{{ form.name }}" required>
+
+    <label for="email">Gmail address</label>
+    <input id="email" name="email" type="email" value="{{ form.email }}" placeholder="example@gmail.com" required>
+
+    <label for="password">Password</label>
+    <input id="password" name="password" type="text" maxlength="14" autocomplete="new-password" required>
+    <div class="hint">8–14 characters with an uppercase, a lowercase and a special character. Share it with the family privately.</div>
+
+    <label for="phone">Phone (optional)</label>
+    <input id="phone" name="phone" value="{{ form.phone }}">
+
+    <div id="family-fields">
+      <label for="child_name">Child's name</label>
+      <input id="child_name" name="child_name" value="{{ form.child_name }}">
+      <label for="child_age">Child's age (optional)</label>
+      <input id="child_age" name="child_age" value="{{ form.child_age }}">
+      <div class="hint">A connect code is generated for the child so a caregiver can be linked.</div>
+    </div>
+
+    <div id="caregiver-fields">
+      <label for="connect_code">Child's connect code (optional)</label>
+      <input id="connect_code" name="connect_code" value="{{ form.connect_code }}" class="mono" style="text-transform:uppercase">
+      <div class="hint">Links this caregiver to that child now. Shown in the Connect code column of the accounts list.</div>
+    </div>
+
+    <div style="margin-top:22px;display:flex;gap:8px">
+      <button class="btn btn-primary" type="submit">Create account</button>
+      <a class="btn" href="{% url 'centre:dashboard' %}">Cancel</a>
+    </div>
+  </form>
+</div>
+<script>
+  function showRoleFields() {
+    const family = document.getElementById('role').value === 'family';
+    document.getElementById('family-fields').hidden = !family;
+    document.getElementById('caregiver-fields').hidden = family;
+    document.getElementById('child_name').required = family;
+    document.getElementById('name-label').textContent = family ? "Parent's name" : "Caregiver's name";
+  }
+  showRoleFields();
+</script>
+{% endblock %}

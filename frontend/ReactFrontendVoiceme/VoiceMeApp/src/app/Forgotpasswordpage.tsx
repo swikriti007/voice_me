@@ -9,51 +9,160 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
-  Linking,
+  ActivityIndicator,
 } from "react-native";
 import { router } from "expo-router";
 
 import { API_BASE_URL } from '@/constants/api';
+import { INVALID_EMAIL_MESSAGE, isValidGmail } from '@/constants/email';
+import { PASSWORD_MAX_LENGTH, PASSWORD_RULES_MESSAGE, isValidPassword } from '@/constants/password';
+import {
+  CHECK_INBOX_MESSAGE,
+  CODE_LENGTH,
+  CODE_REQUIRED_MESSAGE,
+  RESEND_COOLDOWN_SECONDS,
+  isValidCode,
+  retryAfterSeconds,
+  sanitizeCode,
+} from '@/constants/verification';
+import { PasswordChecklist } from '@/components/password-checklist';
+import { useCountdown } from '@/hooks/use-countdown';
 
+type Step = "email" | "reset" | "done";
+
+const NETWORK_ERROR = "सर्भरमा पुग्न सकिएन (Unable to reach the server. Please check your connection and try again.)";
+
+// Two steps on one screen: (1) email a 6-digit code to the Gmail address,
+// (2) enter that code with a new password. No browser link is involved.
 export default function Forgotpasswordpage() {
+  const [step, setStep] = useState<Step>("email");
   const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [linkSent, setLinkSent] = useState(false);
-  // Only present while the backend runs with DEBUG on, so the reset link can
-  // be tested without checking the server terminal or a real inbox.
-  const [debugResetUrl, setDebugResetUrl] = useState<string | null>(null);
+  const [isResending, setIsResending] = useState(false);
+  const [formError, setFormError] = useState("");
+  const [infoMessage, setInfoMessage] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
+  const resendCountdown = useCountdown();
 
-  const handleSendLink = async () => {
-    if (!email.trim() || !email.includes('@')) {
-      alert("Please enter a valid email address.");
+  // Returns true when the code was (re)sent.
+  const requestCode = async (): Promise<boolean> => {
+    const response = await fetch(`${API_BASE_URL}/api/forgot-password/`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ email: email.trim() }),
+    });
+    const data = await response.json().catch(() => ({}));
+
+    if (response.status === 429) {
+      resendCountdown.start(retryAfterSeconds(data));
+      setFormError(data?.error || 'Please wait before requesting another code.');
+      return false;
+    }
+    if (!response.ok) {
+      setFormError(data?.error || 'Unable to send a reset code right now.');
+      return false;
+    }
+
+    setInfoMessage(data?.message || '');
+    resendCountdown.start(RESEND_COOLDOWN_SECONDS);
+    return true;
+  };
+
+  const handleSendCode = async () => {
+    setFormError("");
+    if (!isValidGmail(email)) {
+      setFormError(INVALID_EMAIL_MESSAGE);
       return;
     }
 
     setIsSubmitting(true);
-
     try {
-      const response = await fetch(`${API_BASE_URL}/api/forgot-password/`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email: email.trim() }),
-      });
-
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        throw new Error(data?.error || 'Unable to send a reset link right now.');
-      }
-
-      setLinkSent(true);
-      setDebugResetUrl(data?.debug_reset_url || null);
-    } catch (error: any) {
-      alert(error?.message || 'Unable to send a reset link. Please try again.');
+      if (await requestCode()) setStep("reset");
+    } catch {
+      setFormError(NETWORK_ERROR);
     } finally {
       setIsSubmitting(false);
     }
   };
+
+  const handleResend = async () => {
+    if (isResending || resendCountdown.secondsLeft > 0) return;
+    setFormError("");
+    setIsResending(true);
+    try {
+      await requestCode();
+    } catch {
+      setFormError(NETWORK_ERROR);
+    } finally {
+      setIsResending(false);
+    }
+  };
+
+  const handleResetPassword = async () => {
+    setFormError("");
+    if (!isValidCode(code)) {
+      setFormError(CODE_REQUIRED_MESSAGE);
+      return;
+    }
+    if (!isValidPassword(newPassword)) {
+      setFormError(PASSWORD_RULES_MESSAGE);
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setFormError("पासवर्ड मेल खाएन (Passwords do not match)");
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/reset-password/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: email.trim(),
+          code: code.trim(),
+          new_password: newPassword,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        setFormError(data?.error || 'Unable to reset the password right now.');
+        return;
+      }
+
+      setSuccessMessage(data?.message || 'Your password has been reset.');
+      setStep("done");
+    } catch {
+      setFormError(NETWORK_ERROR);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleUseDifferentEmail = () => {
+    setStep("email");
+    setCode("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setFormError("");
+    setInfoMessage("");
+    resendCountdown.reset();
+  };
+
+  const errorBanner = formError ? (
+    <View style={styles.errorBox}>
+      <Text style={styles.errorText}>{formError}</Text>
+    </View>
+  ) : null;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -86,11 +195,11 @@ export default function Forgotpasswordpage() {
               <Text style={styles.englishHeading}>Forgot Password</Text>
             </View>
 
-            {!linkSent ? (
+            {step === "email" && (
               <>
                 <Text style={styles.helperText}>
-                  तपाईंको इमेलमा पासवर्ड रिसेट लिंक पठाइनेछ।{"\n"}
-                  We'll email you a link to reset your password.
+                  तपाईंको Gmail मा ६ अंकको कोड पठाइनेछ।{"\n"}
+                  We&apos;ll email you a 6-digit code to reset your password.
                 </Text>
 
                 {/* FORM */}
@@ -99,10 +208,13 @@ export default function Forgotpasswordpage() {
                   <View style={styles.inputContainer}>
                     <TextInput
                       style={styles.input}
-                      placeholder="Email"
+                      placeholder="name@gmail.com"
                       placeholderTextColor="#443F32"
                       value={email}
-                      onChangeText={setEmail}
+                      onChangeText={(text) => {
+                        setEmail(text);
+                        if (formError) setFormError("");
+                      }}
                       keyboardType="email-address"
                       autoCapitalize="none"
                       autoCorrect={false}
@@ -110,7 +222,9 @@ export default function Forgotpasswordpage() {
                   </View>
                 </View>
 
-                {/* SEND LINK BUTTON */}
+                {errorBanner}
+
+                {/* SEND CODE BUTTON */}
                 <Pressable
                   style={({ pressed }) => [
                     styles.primaryButton,
@@ -119,63 +233,173 @@ export default function Forgotpasswordpage() {
                   ]}
                   onPress={() => {
                     if (!isSubmitting) {
-                      void handleSendLink();
+                      void handleSendCode();
                     }
                   }}
                   disabled={isSubmitting}
                 >
-                  <Text style={styles.primaryNepali}>लिंक पठाउनुहोस्</Text>
-                  <Text style={styles.primaryEnglish}>
-                    {isSubmitting ? "Sending…" : "Send reset link"}
-                  </Text>
+                  {isSubmitting ? (
+                    <ActivityIndicator color="#FFF8ED" />
+                  ) : (
+                    <>
+                      <Text style={styles.primaryNepali}>कोड पठाउनुहोस्</Text>
+                      <Text style={styles.primaryEnglish}>Send code</Text>
+                    </>
+                  )}
                 </Pressable>
               </>
-            ) : (
+            )}
+
+            {step === "reset" && (
               <>
-                <View style={styles.confirmBox}>
-                  <Text style={styles.confirmNepali}>इमेल जाँच गर्नुहोस्</Text>
-                  <Text style={styles.confirmEnglish}>
-                    If an account exists for {email.trim()}, we've sent a password
-                    reset link to that email. Open it to choose a new password,
-                    then come back and log in.
-                  </Text>
+                <Text style={styles.helperText}>
+                  {infoMessage ? `${infoMessage}\n` : ""}
+                  {CHECK_INBOX_MESSAGE}
+                </Text>
+
+                <View style={styles.formContainer}>
+                  {/* CODE */}
+                  <Text style={styles.fieldLabel}>कोड (Code)</Text>
+                  <View style={styles.inputContainer}>
+                    <TextInput
+                      style={[styles.input, styles.codeInput]}
+                      placeholder="123456"
+                      placeholderTextColor="#443F32"
+                      value={code}
+                      onChangeText={(text) => setCode(sanitizeCode(text))}
+                      keyboardType="number-pad"
+                      maxLength={CODE_LENGTH}
+                      autoCorrect={false}
+                    />
+                  </View>
+
+                  {/* NEW PASSWORD */}
+                  <Text style={styles.fieldLabel}>नयाँ पासवर्ड (New password)</Text>
+                  <View style={styles.inputContainer}>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="New password"
+                      placeholderTextColor="#443F32"
+                      value={newPassword}
+                      onChangeText={setNewPassword}
+                      secureTextEntry={!showPassword}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      maxLength={PASSWORD_MAX_LENGTH}
+                    />
+                    <Pressable
+                      onPress={() => setShowPassword((v) => !v)}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                      <Text style={styles.eyeToggleText}>
+                        {showPassword ? 'लुकाउनुहोस्' : 'हेर्नुहोस्'}
+                      </Text>
+                    </Pressable>
+                  </View>
+                  <PasswordChecklist password={newPassword} />
+
+                  {/* CONFIRM PASSWORD */}
+                  <Text style={[styles.fieldLabel, { marginTop: 10 }]}>पासवर्ड पुष्टि (Confirm password)</Text>
+                  <View style={styles.inputContainer}>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Confirm password"
+                      placeholderTextColor="#443F32"
+                      value={confirmPassword}
+                      onChangeText={setConfirmPassword}
+                      secureTextEntry={!showPassword}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      maxLength={PASSWORD_MAX_LENGTH}
+                    />
+                  </View>
+                  {confirmPassword.length > 0 && confirmPassword !== newPassword ? (
+                    <Text style={styles.mismatchText}>पासवर्ड मेल खाएन (Passwords do not match)</Text>
+                  ) : null}
                 </View>
 
-                {/* Dev-only shortcut: lets the reset link be opened straight from
-                    the app while the backend runs with DEBUG=True. */}
-                {debugResetUrl && (
-                  <Pressable
-                    style={styles.secondaryButton}
-                    onPress={() => Linking.openURL(debugResetUrl)}
-                  >
-                    <Text style={styles.secondaryButtonText}>
-                      (Debug) Open reset link
-                    </Text>
-                  </Pressable>
-                )}
+                {errorBanner}
 
+                {/* RESET BUTTON */}
                 <Pressable
-                  style={styles.secondaryButton}
+                  style={({ pressed }) => [
+                    styles.primaryButton,
+                    pressed && styles.buttonPressed,
+                    isSubmitting && styles.buttonDisabled,
+                  ]}
                   onPress={() => {
-                    setLinkSent(false);
-                    setDebugResetUrl(null);
+                    if (!isSubmitting) {
+                      void handleResetPassword();
+                    }
                   }}
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? (
+                    <ActivityIndicator color="#FFF8ED" />
+                  ) : (
+                    <>
+                      <Text style={styles.primaryNepali}>पासवर्ड रिसेट गर्नुहोस्</Text>
+                      <Text style={styles.primaryEnglish}>Reset password</Text>
+                    </>
+                  )}
+                </Pressable>
+
+                {/* RESEND CODE */}
+                <Pressable
+                  style={[
+                    styles.secondaryButton,
+                    (isResending || resendCountdown.secondsLeft > 0) && styles.buttonDisabled,
+                  ]}
+                  onPress={() => void handleResend()}
+                  disabled={isResending || resendCountdown.secondsLeft > 0}
                 >
                   <Text style={styles.secondaryButtonText}>
-                    Use a different email or resend the link
+                    {isResending
+                      ? 'पठाउँदै… (Sending…)'
+                      : resendCountdown.secondsLeft > 0
+                        ? `फेरि पठाउन ${resendCountdown.secondsLeft}s (Resend code in ${resendCountdown.secondsLeft}s)`
+                        : 'कोड फेरि पठाउनुहोस् (Resend code)'}
+                  </Text>
+                </Pressable>
+
+                <Pressable style={styles.secondaryButton} onPress={handleUseDifferentEmail}>
+                  <Text style={styles.secondaryButtonText}>
+                    अर्को इमेल प्रयोग गर्नुहोस् (Use a different email)
                   </Text>
                 </Pressable>
               </>
             )}
 
+            {step === "done" && (
+              <>
+                <View style={styles.confirmBox}>
+                  <Text style={styles.confirmNepali}>पासवर्ड परिवर्तन भयो</Text>
+                  <Text style={styles.confirmEnglish}>
+                    {successMessage}{"\n"}
+                    Log in with your new password.
+                  </Text>
+                </View>
+
+                <Pressable
+                  style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed]}
+                  onPress={() => router.replace("/Loginpage")}
+                >
+                  <Text style={styles.primaryNepali}>लगइन गर्नुहोस्</Text>
+                  <Text style={styles.primaryEnglish}>Go to login</Text>
+                </Pressable>
+              </>
+            )}
+
             {/* BACK TO LOGIN */}
-            <Pressable
-              style={styles.backToLogin}
-              onPress={() => router.replace("/Loginpage")}
-            >
-              <Text style={styles.backNepali}>लगइनमा फर्कनुहोस्</Text>
-              <Text style={styles.backEnglish}>Back to login</Text>
-            </Pressable>
+            {step !== "done" && (
+              <Pressable
+                style={styles.backToLogin}
+                onPress={() => router.replace("/Loginpage")}
+              >
+                <Text style={styles.backNepali}>लगइनमा फर्कनुहोस्</Text>
+                <Text style={styles.backEnglish}>Back to login</Text>
+              </Pressable>
+            )}
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -355,6 +579,37 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     marginTop: 15,
     elevation: 2,
+  },
+  codeInput: {
+    letterSpacing: 6,
+    fontWeight: "700",
+  },
+  eyeToggleText: {
+    fontSize: 11,
+    color: "#443F32",
+    fontWeight: "600",
+    paddingHorizontal: 6,
+  },
+  mismatchText: {
+    color: "#C0392B",
+    fontSize: 12,
+    fontWeight: "600",
+    marginLeft: 6,
+  },
+  errorBox: {
+    backgroundColor: "#FBDCDC",
+    borderRadius: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginTop: 14,
+    borderWidth: 1,
+    borderColor: "#E4A0A0",
+  },
+  errorText: {
+    color: "#8A1F1F",
+    fontSize: 13,
+    fontWeight: "600",
+    textAlign: "center",
   },
   secondaryButtonText: {
     color: "#3D302A",
