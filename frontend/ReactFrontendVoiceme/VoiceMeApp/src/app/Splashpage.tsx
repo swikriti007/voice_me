@@ -2,16 +2,16 @@ import React, { useEffect } from 'react';
 import { Pressable, SafeAreaView, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { LAST_EMAIL_KEY } from '@/constants/email';
 
 const AUTH_TOKEN_KEY = 'voiceme.authToken';
 
+// Every app start asks for the password again (the email is pre-filled on
+// the Login screen); only a device that has never signed in goes to Register.
 async function goToNextScreen() {
-  const [[, authToken], [, role]] = await AsyncStorage.multiGet([AUTH_TOKEN_KEY, 'voiceme.selectedRole']);
-  if (!authToken) {
-    router.replace('/Registerpage');
-  } else {
-    router.replace(role === 'caregiver' ? '/Caregiverpage' : '/Homepage');
-  }
+  const [[, authToken], [, lastEmail]] = await AsyncStorage.multiGet([AUTH_TOKEN_KEY, LAST_EMAIL_KEY]);
+  await AsyncStorage.removeItem(AUTH_TOKEN_KEY).catch(() => {});
+  router.replace(authToken || lastEmail ? '/Loginpage' : '/Registerpage');
 }
 
 export default function Splashpage() {

@@ -86,6 +86,16 @@ export default function Homepage({
         if (profile.age?.trim()) setRegisteredAge(profile.age.trim());
         if (profile.avatar?.trim()) setRegisteredAvatar(profile.avatar.trim());
         if (profile.gps) setGpsStatus(profile.gps);
+      } else if (profileRes.status === 404) {
+        // No child of its own: if this account is a caregiver linked by
+        // connect code (e.g. a session from before the role was remembered),
+        // it belongs on the caregiver dashboard, not the child's home.
+        const cgRes = await fetch(`${API_BASE_URL}/api/caregiver/dashboard/`, { headers });
+        if (cgRes.ok) {
+          await AsyncStorage.setItem('voiceme.selectedRole', 'caregiver');
+          router.replace('/Caregiverpage');
+          return;
+        }
       }
     } catch {
       // Offline or backend unreachable: keep whatever AsyncStorage/defaults are showing.
@@ -118,6 +128,20 @@ export default function Homepage({
     useCallback(() => {
       loadUserData();
       loadBackendData();
+
+      // The SOS device reports its position every ~30 s; keep the live
+      // location current while this screen is open.
+      const interval = setInterval(async () => {
+        try {
+          const token = await AsyncStorage.getItem(AUTH_TOKEN_KEY);
+          if (!token) return;
+          const res = await fetch(`${API_BASE_URL}/api/child/gps/`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (res.ok) setGpsStatus(await res.json());
+        } catch { }
+      }, 15000);
+      return () => clearInterval(interval);
     }, [loadUserData, loadBackendData])
   );
 
@@ -156,7 +180,8 @@ export default function Homepage({
     const connected = gpsStatus?.connected ?? false;
     const locationLabel = gpsStatus?.location_label || 'थाहा छैन (Unknown)';
     const updatedAt = gpsStatus?.updated_at
-      ? new Date(gpsStatus.updated_at).toLocaleTimeString()
+      // Backend timestamps are UTC without a "Z"; add it so this shows local time.
+      ? new Date(gpsStatus.updated_at + (gpsStatus.updated_at.endsWith('Z') ? '' : 'Z')).toLocaleTimeString()
       : 'भर्खरै (Just now)';
 
     Alert.alert(

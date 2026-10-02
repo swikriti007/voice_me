@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -14,6 +14,8 @@ import {
 import { router } from "expo-router";
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE_URL } from '@/constants/api';
+import { INVALID_EMAIL_MESSAGE, LAST_EMAIL_KEY, isValidGmail } from '@/constants/email';
+import { CACHED_PROFILE_KEYS } from '@/constants/session';
 
 const AUTH_TOKEN_KEY = 'voiceme.authToken';
 const AUTH_USER_KEY = 'voiceme.user';
@@ -22,28 +24,13 @@ const REGISTERED_AGE_KEY = 'voiceme.registeredAge';
 
 const SELECTED_ROLE_KEY = 'voiceme.selectedRole';
 
-// Cached details from whoever was logged in before on this device; cleared
-// on login so the new account never shows the previous person's info.
-const CACHED_PROFILE_KEYS = [
-  'voiceme.registeredName',
-  'voiceme.registeredAge',
-  'voiceme.registeredAvatar',
-  'voiceme.parentName',
-  'voiceme.emergencyPhone',
-  'voiceme.doctorName',
-  'voiceme.doctorPhone',
-  'voiceme.caregiverName',
-  'voiceme.caregiverPhone',
-  'voiceme.caregiverEmail',
-  'voiceme.currentRole',
-  'voiceme.bellActive',
-  'voiceme.daily_routine_state',
-];
-
 const persistAuthSession = async (token: string, user: { id?: string; name?: string; email?: string; age?: string | number }) => {
   await AsyncStorage.multiRemove(CACHED_PROFILE_KEYS);
   await AsyncStorage.setItem(AUTH_TOKEN_KEY, token);
   await AsyncStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+  if (user?.email) {
+    await AsyncStorage.setItem(LAST_EMAIL_KEY, String(user.email));
+  }
 
   if (user?.name) {
     await AsyncStorage.setItem(REGISTERED_NAME_KEY, String(user.name));
@@ -61,12 +48,23 @@ export default function Loginpage() {
   const [formError, setFormError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<{ email?: string; password?: string }>({});
 
+  // Pre-fill the last email used on this device; the password is always typed.
+  useEffect(() => {
+    AsyncStorage.getItem(LAST_EMAIL_KEY)
+      .then((saved) => {
+        if (saved) setEmail((current) => current || saved);
+      })
+      .catch(() => {});
+  }, []);
+
   const handleLogin = async () => {
     setFormError('');
 
     const errors: typeof fieldErrors = {};
     if (!email.trim()) {
       errors.email = 'कृपया आफ्नो इमेल प्रविष्ट गर्नुहोस् (Please enter your email)';
+    } else if (!isValidGmail(email)) {
+      errors.email = INVALID_EMAIL_MESSAGE;
     }
     if (!password.trim()) {
       errors.password = 'कृपया आफ्नो पासवर्ड प्रविष्ट गर्नुहोस् (Please enter your password)';

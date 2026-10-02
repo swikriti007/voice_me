@@ -19,6 +19,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE_URL } from '@/constants/api';
 import { dialPhone } from '@/constants/phone';
 import { SosAlertBanner } from '@/components/sos-alert-banner';
+import { LogoutButton } from '@/components/logout-button';
 
 // Shape returned by /api/caregiver/routines/ — the connected child's own
 // routine, which the caregiver can only watch, never set or edit.
@@ -29,6 +30,18 @@ interface RoutineItem {
   icon: string;
   completed: boolean;
 }
+
+// The child's latest position, as the SOS device (or app) last reported it.
+interface GPSStatus {
+  connected: boolean;
+  location_label: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  updated_at: string | null;
+}
+
+// How often the dashboard re-fetches the child's live location.
+const LOCATION_REFRESH_MS = 15000;
 
 const AUTH_TOKEN_KEY = 'voiceme.authToken';
 
@@ -193,6 +206,7 @@ function CaregiverDashboard() {
   const [soundAlertsEnabled, setSoundAlertsEnabled] = useState(true);
   const [routines, setRoutines] = useState<RoutineItem[]>([]);
   const [isConnected, setIsConnected] = useState(false);
+  const [gpsStatus, setGpsStatus] = useState<GPSStatus | null>(null);
 
   const completedCount = routines.filter((r) => r.completed).length;
   const progressPercent = routines.length > 0 ? Math.round((completedCount / routines.length) * 100) : 0;
@@ -260,6 +274,7 @@ function CaregiverDashboard() {
         if (child.doctor?.name) setDoctorName(child.doctor.name);
         if (child.doctor?.phone) setDoctorPhone(child.doctor.phone);
         if (child.caregiver?.name) setCaregiverName(child.caregiver.name);
+        if (child.gps) setGpsStatus(child.gps);
       } catch {
         // Offline or backend unreachable: keep whatever is currently shown.
       }
@@ -285,7 +300,24 @@ function CaregiverDashboard() {
         .catch(() => {});
     }, 2500);
 
-    return () => clearInterval(interval);
+    // The SOS device reports its position every ~30 s; keep the card current.
+    const locationInterval = setInterval(async () => {
+      try {
+        const token = await AsyncStorage.getItem(AUTH_TOKEN_KEY);
+        if (!token) return;
+        const res = await fetch(`${API_BASE_URL}/api/caregiver/dashboard/`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+        const child = await res.json();
+        if (child.gps) setGpsStatus(child.gps);
+      } catch {}
+    }, LOCATION_REFRESH_MS);
+
+    return () => {
+      clearInterval(interval);
+      clearInterval(locationInterval);
+    };
   }, []);
 
   const handleBack = () => {
@@ -440,6 +472,8 @@ function CaregiverDashboard() {
           </Svg>
           <Text style={styles.backButtonText}>गृहपृष्ठ · Home</Text>
         </Pressable>
+
+        <LogoutButton />
       </View>
 
       <ScrollView
@@ -492,12 +526,23 @@ function CaregiverDashboard() {
           {/* Location & GPS line */}
           <View style={styles.statusRow}>
             <Text style={styles.statusLabel}>📍 स्थान (Location):</Text>
-            <Text style={styles.statusValue}>घर · बैठक कोठा (Living Room)</Text>
+            <Text style={styles.statusValue}>
+              {gpsStatus?.location_label
+                || (gpsStatus?.lat != null && gpsStatus?.lng != null
+                  ? `${gpsStatus.lat.toFixed(5)}, ${gpsStatus.lng.toFixed(5)}`
+                  : 'थाहा छैन (Unknown)')}
+            </Text>
           </View>
 
           <View style={styles.statusRow}>
             <Text style={styles.statusLabel}>⌚ जीपीएस ब्याण्ड:</Text>
-            <Text style={styles.statusValue}>सक्रिय · सुरक्षित क्षेत्र भित्र (Active)</Text>
+            <Text style={styles.statusValue}>
+              {gpsStatus?.connected
+                ? `सक्रिय (Active)${gpsStatus.updated_at
+                  ? ` · ${new Date(gpsStatus.updated_at + (gpsStatus.updated_at.endsWith('Z') ? '' : 'Z')).toLocaleTimeString()}`
+                  : ''}`
+                : 'जोडिएको छैन (Not connected)'}
+            </Text>
           </View>
 
           {/* Quick Voice Reassurance Action */}

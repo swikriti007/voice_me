@@ -7,3 +7,22 @@
   --font-rounded: 'SF Pro Rounded', 'Hiragino Maru Gothic ProN', Meiryo, 'MS PGothic', sans-serif;
   --font-serif: Georgia, 'Times New Roman', serif;
 }
+
+/* A browser <input> has a built-in minimum width (~170px), so on a narrow
+   phone a TextInput with an icon or "show password" button beside it won't
+   shrink and pushes those out of its pill. Let flex size it instead. */
+input,
+textarea {
+  min-width: 0;
+}
+
+/* iOS Safari zooms the whole page into any input whose text is under 16px
+   and doesn't zoom back out. Most inputs here use 14-15px, so bump them on
+   touch screens only; laptops keep the designed size. */
+@media (hover: none) and (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}

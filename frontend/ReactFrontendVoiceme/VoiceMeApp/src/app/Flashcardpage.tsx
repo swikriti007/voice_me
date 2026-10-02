@@ -7,7 +7,7 @@ import {
   StatusBar,
   ScrollView,
   Pressable,
-  Dimensions,
+  useWindowDimensions,
   Platform,
 } from 'react-native';
 import Svg, { Path, Rect, Circle, Ellipse } from 'react-native-svg';
@@ -16,8 +16,6 @@ import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { API_BASE_URL } from '@/constants/api';
 
-const { width } = Dimensions.get('window');
-const CARD_WIDTH = (width - 32 - 12) / 2; // 2 columns with 16px screen padding and 12px gap
 
 
 type Language = 'ne' | 'en';
@@ -217,6 +215,9 @@ const CardIllustration: React.FC<{ type: string; accentColor: string }> = ({ typ
 };
 
 export default function App() {
+  // Read live so the grid re-fits when a browser window is resized or a phone rotates.
+  const { width } = useWindowDimensions();
+  const cardWidth = (width - 32 - 12) / 2; // 2 columns with 16px screen padding and 12px gap
   const [lang, setLang] = useState<Language>('ne');
   const [selectedCard, setSelectedCard] = useState<Flashcard>(FLASHCARDS[0]); // Default to Food / खाना
   const [speakingLanguage, setSpeakingLanguage] = useState<Language | null>(null);
@@ -368,7 +369,7 @@ export default function App() {
                 onPress={() => handleCardPress(card)}
                 style={[
                   styles.card,
-                  { backgroundColor: card.bgColor },
+                  { width: cardWidth, backgroundColor: card.bgColor },
                   isSelected && styles.cardSelected,
                 ]}
               >
@@ -598,7 +599,6 @@ const styles = StyleSheet.create({
     rowGap: 14,
   },
   card: {
-    width: CARD_WIDTH,
     height: 172,
     borderRadius: 26,
     padding: 14,

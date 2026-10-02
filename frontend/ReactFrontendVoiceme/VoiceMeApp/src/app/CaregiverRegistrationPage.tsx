@@ -16,6 +16,7 @@ import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { API_BASE_URL } from '@/constants/api';
+import { INVALID_EMAIL_MESSAGE, LAST_EMAIL_KEY, isValidGmail } from '@/constants/email';
 
 const AUTH_TOKEN_KEY = "voiceme.authToken";
 const AUTH_USER_KEY = "voiceme.user";
@@ -104,6 +105,16 @@ export default function CaregiverRegistrationPage() {
       return;
     }
 
+    if (!isValidGmail(email)) {
+      setDialogInfo({
+        visible: true,
+        titleNe: "अमान्य इमेल",
+        titleEn: "Invalid Email",
+        message: INVALID_EMAIL_MESSAGE,
+      });
+      return;
+    }
+
     if (!connectCode.trim()) {
       setDialogInfo({
         visible: true,
@@ -166,6 +177,7 @@ export default function CaregiverRegistrationPage() {
       if (token) {
         await AsyncStorage.setItem(AUTH_TOKEN_KEY, token);
         await AsyncStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+        await AsyncStorage.setItem(LAST_EMAIL_KEY, email.trim());
         await AsyncStorage.setItem("voiceme.selectedRole", "caregiver");
       }
 

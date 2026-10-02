@@ -18,6 +18,9 @@ import { API_BASE_URL } from '@/constants/api';
 import { dialPhone } from '@/constants/phone';
 
 const AUTH_TOKEN_KEY = 'voiceme.authToken';
+const REGISTERED_NAME_KEY = 'voiceme.registeredName';
+const REGISTERED_AGE_KEY = 'voiceme.registeredAge';
+const REGISTERED_AVATAR_KEY = 'voiceme.registeredAvatar';
 
 interface Contact {
   name?: string;
@@ -36,27 +39,46 @@ export const ChildProfileScreen: React.FC<ChildProfileProps> = ({
   onViewLocationHistory,
   onEditProfile,
 }) => {
-  const [childName, setChildName] = useState('आरव');
-  const [childSub, setChildSub] = useState('Aarav K. • 7 years');
+  const [childName, setChildName] = useState('');
+  const [childAge, setChildAge] = useState('');
   const [avatar, setAvatar] = useState('👦');
   const [caregiver, setCaregiver] = useState<Contact | null>(null);
   const [locationLabel, setLocationLabel] = useState('At home');
-  const [updatedLabel, setUpdatedLabel] = useState('Updated 2 minutes ago');
+  const [updatedLabel, setUpdatedLabel] = useState('GPS band not connected');
   const [caregiverModalVisible, setCaregiverModalVisible] = useState(false);
+  const [isCaregiverView, setIsCaregiverView] = useState(false);
 
   const loadProfile = useCallback(async () => {
+    // Same fallback as Homepage: show the details saved on this device first,
+    // so the page never shows placeholder data when no backend profile exists.
+    try {
+      const [[, name], [, age], [, savedAvatar]] = await AsyncStorage.multiGet([
+        REGISTERED_NAME_KEY,
+        REGISTERED_AGE_KEY,
+        REGISTERED_AVATAR_KEY,
+      ]);
+      if (name?.trim()) setChildName(name.trim());
+      if (age?.trim()) setChildAge(age.trim());
+      if (savedAvatar?.trim()) setAvatar(savedAvatar.trim());
+    } catch {}
+
     const token = await AsyncStorage.getItem(AUTH_TOKEN_KEY);
     if (!token) return;
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/child/profile/`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) return;
+      const headers = { Authorization: `Bearer ${token}` };
+      let res = await fetch(`${API_BASE_URL}/api/child/profile/`, { headers });
+      if (!res.ok) {
+        // A caregiver account owns no child profile; show the child it is
+        // linked to by connect code instead.
+        res = await fetch(`${API_BASE_URL}/api/caregiver/dashboard/`, { headers });
+        if (!res.ok) return;
+        setIsCaregiverView(true);
+      }
 
       const profile = await res.json();
       if (profile.name?.trim()) setChildName(profile.name.trim());
-      if (profile.age?.trim()) setChildSub(`${profile.name || ''} • ${profile.age}`.trim());
+      if (profile.age?.trim()) setChildAge(profile.age.trim());
       if (profile.avatar?.trim()) setAvatar(profile.avatar.trim());
       if (profile.caregiver) setCaregiver(profile.caregiver);
       if (profile.gps?.location_label) setLocationLabel(profile.gps.location_label);
@@ -140,8 +162,8 @@ export const ChildProfileScreen: React.FC<ChildProfileProps> = ({
             <Text style={styles.avatarEmoji}>{avatar}</Text>
           </View>
           <View style={styles.profileInfo}>
-            <Text style={styles.nameHindi}>{childName}</Text>
-            <Text style={styles.nameSub}>{childSub}</Text>
+            <Text style={styles.nameHindi}>{childName || 'No profile yet'}</Text>
+            {!!childAge && <Text style={styles.nameSub}>{childAge}</Text>}
             <Text style={styles.managedBy}>Profile managed by parent</Text>
           </View>
         </View>
@@ -212,14 +234,16 @@ export const ChildProfileScreen: React.FC<ChildProfileProps> = ({
             <Text style={styles.primaryButtonText}>View Location History</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.secondaryButton}
-            onPress={handleEditProfile}
-            activeOpacity={0.85}
-            accessibilityRole="button"
-          >
-            <Text style={styles.secondaryButtonText}>Edit Child Profile</Text>
-          </TouchableOpacity>
+          {!isCaregiverView && (
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={handleEditProfile}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+            >
+              <Text style={styles.secondaryButtonText}>Edit Child Profile</Text>
+            </TouchableOpacity>
+          )}
 
           {/* Return to Homepage Button */}
           <TouchableOpacity

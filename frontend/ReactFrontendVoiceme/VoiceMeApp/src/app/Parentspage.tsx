@@ -11,6 +11,7 @@ import {
   TextInput,
   Switch,
   Modal,
+  useWindowDimensions,
 } from 'react-native';
 import { router } from 'expo-router';
 import Svg, { Path, Circle } from 'react-native-svg';
@@ -19,6 +20,7 @@ import * as Speech from 'expo-speech';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE_URL } from '@/constants/api';
 import { SosAlertBanner } from '@/components/sos-alert-banner';
+import { LogoutButton } from '@/components/logout-button';
 import { dialPhone } from '@/constants/phone';
 
 interface RoutineItem {
@@ -43,6 +45,7 @@ const DEFAULT_ROUTINES: RoutineItem[] = [
 ];
 
 export default function Parentspage() {
+  const { width } = useWindowDimensions();
   const [childName, setChildName] = useState('आरव (Aarav)');
   const [childAge, setChildAge] = useState('७ वर्ष (7 yrs)');
   const [selectedAvatar, setSelectedAvatar] = useState('👦');
@@ -293,7 +296,10 @@ export default function Parentspage() {
           <Text style={styles.backButtonText}>गृहपृष्ठ · Home</Text>
         </Pressable>
 
-        <Text style={styles.brandTitle}>Voice Me</Text>
+        {/* Home + Logout already fill a small phone's width; drop the brand there. */}
+        {width >= 360 && <Text style={styles.brandTitle}>Voice Me</Text>}
+
+        <LogoutButton />
       </View>
 
       <ScrollView

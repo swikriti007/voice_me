@@ -16,6 +16,7 @@ import {
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE_URL } from '@/constants/api';
+import { INVALID_EMAIL_MESSAGE, LAST_EMAIL_KEY, isValidGmail } from '@/constants/email';
 
 const REGISTERED_NAME_KEY = 'voiceme.registeredName';
 const REGISTERED_AGE_KEY = 'voiceme.registeredAge';
@@ -25,6 +26,9 @@ const AUTH_USER_KEY = 'voiceme.user';
 const persistAuthSession = async (token: string, user: { id?: string; name?: string; email?: string; age?: string | number }) => {
     await AsyncStorage.setItem(AUTH_TOKEN_KEY, token);
     await AsyncStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+    if (user?.email) {
+        await AsyncStorage.setItem(LAST_EMAIL_KEY, String(user.email));
+    }
 
     if (user?.name) {
         await AsyncStorage.setItem(REGISTERED_NAME_KEY, String(user.name));
@@ -56,8 +60,10 @@ export default function CreateAccountScreen() {
         } else if (Number.isNaN(Number(age)) || Number(age) <= 0) {
             errors.age = 'मान्य उमेर प्रविष्ट गर्नुहोस् (Please enter a valid age)';
         }
-        if (!email.trim() || !email.includes('@')) {
-            errors.email = 'कृपया मान्य इमेल प्रविष्ट गर्नुहोस् (Please enter a valid email)';
+        if (!email.trim()) {
+            errors.email = 'कृपया आफ्नो इमेल प्रविष्ट गर्नुहोस् (Please enter your email)';
+        } else if (!isValidGmail(email)) {
+            errors.email = INVALID_EMAIL_MESSAGE;
         }
         if (!password || password.length < 6) {
             errors.password = 'पासवर्ड कम्तिमा ६ अक्षरको हुनुपर्छ (Password must be at least 6 characters)';

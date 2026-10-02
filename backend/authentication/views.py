@@ -1,6 +1,7 @@
 import jwt
 import datetime
 import hashlib
+import re
 import secrets
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -13,6 +14,15 @@ from bson import ObjectId
 from .db import users_collection, notes_collection, password_resets_collection
 
 SECRET_KEY = "your_jwt_secret_key_change_in_production"
+
+# Accounts must use a Gmail address (e.g. "name@gmail.com"); anything else,
+# like a bare "name@", is rejected at registration and login.
+GMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@gmail\.com$', re.IGNORECASE)
+INVALID_EMAIL_ERROR = 'Invalid email. Please use a Gmail address (example@gmail.com).'
+
+
+def is_valid_gmail(email):
+    return bool(GMAIL_RE.match((email or '').strip()))
 
 # How long an emailed reset link stays usable.
 RESET_LINK_TTL_MINUTES = 30
@@ -46,6 +56,9 @@ def create_account(request):
 
     if not email or not password:
         return Response({'error': 'Email and password are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not is_valid_gmail(email):
+        return Response({'error': INVALID_EMAIL_ERROR}, status=status.HTTP_400_BAD_REQUEST)
 
     if users_collection.find_one({'email': email}):
         return Response({'error': 'An account with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -82,6 +95,9 @@ def login_user(request):
 
     if not email or not password:
         return Response({'error': 'Email and password are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not is_valid_gmail(email):
+        return Response({'error': INVALID_EMAIL_ERROR}, status=status.HTTP_400_BAD_REQUEST)
 
     user = users_collection.find_one({'email': email})
     if not user or not check_password(password, user['password']):
