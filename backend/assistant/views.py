@@ -2,7 +2,7 @@ from pathlib import Path
 
 from django.conf import settings
 from django.http import FileResponse, Http404
-from gtts import gTTS
+from backend.tts import synthesize
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -131,6 +131,6 @@ def contextual_flashcard_audio(request, step_id, lang):
     cache_path = TTS_CACHE_DIR / f'{step_id}_{lang}.mp3'
 
     if not cache_path.exists():
-        gTTS(text=step[lang], lang=lang).save(str(cache_path))
+        synthesize(step[lang], lang, cache_path)
 
     return FileResponse(open(cache_path, 'rb'), content_type='audio/mpeg')

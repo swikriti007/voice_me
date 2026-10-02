@@ -4,7 +4,7 @@ import wave
 from io import BytesIO
 from pathlib import Path
 
-from gtts import gTTS
+from backend.tts import synthesize
 from rest_framework.decorators import api_view
 from django.conf import settings
 from django.http import FileResponse, Http404
@@ -65,6 +65,6 @@ def bell_prompt_audio(request, lang):
     cache_path = BELL_CACHE_DIR / f'prompt_{lang}.mp3'
 
     if not cache_path.exists():
-        gTTS(text=text, lang=lang).save(str(cache_path))
+        synthesize(text, lang, cache_path)
 
     return FileResponse(open(cache_path, 'rb'), content_type='audio/mpeg')

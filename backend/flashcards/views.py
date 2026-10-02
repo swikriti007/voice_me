@@ -1,5 +1,5 @@
 from pathlib import Path
-from gtts import gTTS
+from backend.tts import synthesize
 from rest_framework.decorators import api_view
 from django.conf import settings
 from django.http import FileResponse, Http404
@@ -32,6 +32,6 @@ def flashcard_audio(request, card_id, lang):
     # Generated once per card+language, then served straight from disk on every
     # later request so playback has no TTS-generation delay.
     if not cache_path.exists():
-        gTTS(text=words[lang], lang=lang).save(str(cache_path))
+        synthesize(words[lang], lang, cache_path)
 
     return FileResponse(open(cache_path, 'rb'), content_type='audio/mpeg')
