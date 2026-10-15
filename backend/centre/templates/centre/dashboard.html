@@ -44,6 +44,7 @@
     <h1>Registered accounts</h1>
     <p class="sub">Families (parent + child) and caregivers using Voice Me at this centre.</p>
   </div>
+  <a class="btn" href="{% url 'centre:pair-device' %}">Pair SOS device</a>
   <a class="btn btn-primary" href="{% url 'centre:create-account' %}">+ Create account</a>
 </div>
 
@@ -103,6 +104,7 @@
         </td>
         <td>
           {% if r.child %}{{ r.child.name|default:"(no name)" }}{% if r.child.age %}<div class="muted">Age {{ r.child.age }}</div>{% endif %}
+            <div class="muted">{% if r.child.device %}SOS band: {{ r.child.device.id }}{% else %}No SOS band{% endif %}</div>
           {% else %}<span class="muted">—</span>{% endif %}
         </td>
         <td>
@@ -114,12 +116,16 @@
             {% if r.caregiver_name %}{{ r.caregiver_name }}{% if r.caregiver_email %}<div class="muted mono">{{ r.caregiver_email }}</div>{% endif %}
             {% else %}<span class="muted">No caregiver yet</span>{% endif %}
           {% elif r.role == 'caregiver' %}
-            Child: {{ r.child.name|default:"(no name)" }}
+            {% if r.children|length > 1 %}Children:{% else %}Child:{% endif %}
+            {% for c in r.children %}{{ c.name|default:"(no name)" }}{% if not forloop.last %}, {% endif %}{% endfor %}
           {% else %}<span class="muted">—</span>{% endif %}
         </td>
         <td class="muted">{{ r.created_at|date:"j M Y" }}</td>
         <td>
           <div class="actions">
+            {% if r.role == 'family' %}
+              <a class="btn btn-sm" href="{% url 'centre:pair-device' %}?email={{ r.email|urlencode }}">Pair SOS device</a>
+            {% endif %}
             <details>
               <summary class="btn btn-sm">Change password</summary>
               <form method="post" action="{% url 'centre:set-password' r.id %}">

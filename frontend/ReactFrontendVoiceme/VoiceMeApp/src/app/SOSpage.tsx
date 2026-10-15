@@ -146,11 +146,12 @@ export default function SOSpage() {
     })();
   }, []);
 
-  // Only a real saved contact is ever offered here — never a placeholder
-  // number that would dial a stranger in an emergency.
-  const contactPhone = caregiver?.phone || parent?.phone;
-
   const handleCall = (label: string, number: string) => {
+    // Alert buttons don't render on web, so fall back to the browser dialog.
+    if (Platform.OS === 'web') {
+      if (window.confirm(`📞 ${label}\n\nInitiating emergency call to ${number}?`)) dialPhone(number);
+      return;
+    }
     Alert.alert(
       `📞 ${label}`,
       `Initiating emergency call to ${number}?`,
@@ -165,6 +166,22 @@ export default function SOSpage() {
     try {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch {}
+
+    // Close the alert on the backend too, so the parent's and caregiver's
+    // red banner clears on their next poll. Not awaited: going home
+    // shouldn't wait on the network.
+    (async () => {
+      const token = await AsyncStorage.getItem(AUTH_TOKEN_KEY);
+      if (!token) return;
+      try {
+        await fetch(`${API_BASE_URL}/api/sos/resolve/`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({}),
+        });
+      } catch {}
+    })();
+
     if (router.canGoBack()) {
       router.back();
     } else {
@@ -235,13 +252,15 @@ export default function SOSpage() {
 
         {/* Emergency Dispatch Calls */}
         <View style={styles.callsContainer}>
+          {/* Only a real saved contact is ever offered here — never a placeholder
+              number that would dial a stranger in an emergency. */}
           <TouchableOpacity
-            style={[styles.callBtn, styles.callCaregiverBtn, !contactPhone && styles.callBtnDisabled]}
-            disabled={!contactPhone}
-            accessibilityState={{ disabled: !contactPhone }}
-            onPress={() => contactPhone && handleCall(
-              `स्याहारकर्ता (${caregiver?.name || parent?.name || 'Caregiver'})`,
-              contactPhone
+            style={[styles.callBtn, styles.callCaregiverBtn, !caregiver?.phone && styles.callBtnDisabled]}
+            disabled={!caregiver?.phone}
+            accessibilityState={{ disabled: !caregiver?.phone }}
+            onPress={() => caregiver?.phone && handleCall(
+              `स्याहारकर्ता (${caregiver.name || 'Caregiver'})`,
+              caregiver.phone
             )}
             activeOpacity={0.85}
           >
@@ -249,9 +268,30 @@ export default function SOSpage() {
             <View style={styles.callTexts}>
               <Text style={styles.callTitle}>स्याहारकर्तालाई तुरुन्त कल</Text>
               <Text style={styles.callSub}>
-                {contactPhone
-                  ? `Call Caregiver • ${contactPhone}`
-                  : 'कुनै सम्पर्क थपिएको छैन · No contact added — use Police / Ambulance'}
+                {caregiver?.phone
+                  ? `Call Caregiver • ${caregiver.phone}`
+                  : 'स्याहारकर्ता थपिएको छैन · No caregiver added'}
+              </Text>
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.callBtn, styles.callParentBtn, !parent?.phone && styles.callBtnDisabled]}
+            disabled={!parent?.phone}
+            accessibilityState={{ disabled: !parent?.phone }}
+            onPress={() => parent?.phone && handleCall(
+              `अभिभावक (${parent.name || 'Parent'})`,
+              parent.phone
+            )}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.callIcon}>👨‍👩‍👧</Text>
+            <View style={styles.callTexts}>
+              <Text style={styles.callTitle}>अभिभावकलाई कल (Call Parent)</Text>
+              <Text style={styles.callSub}>
+                {parent?.phone
+                  ? `${parent.name || 'Parent'} • ${parent.phone}`
+                  : 'अभिभावक थपिएको छैन · No parent added'}
               </Text>
             </View>
           </TouchableOpacity>
@@ -451,6 +491,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#E8F5E5',
     borderWidth: 1.5,
     borderColor: '#BEE0B7',
+  },
+  callParentBtn: {
+    backgroundColor: '#F1EAFB',
+    borderWidth: 1.5,
+    borderColor: '#D5C3F2',
   },
   callDoctorBtn: {
     backgroundColor: '#FFF4E0',

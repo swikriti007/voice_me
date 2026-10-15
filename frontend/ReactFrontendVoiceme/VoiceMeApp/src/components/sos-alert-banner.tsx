@@ -16,6 +16,9 @@ interface SosAlert {
   gps_fix: boolean;
   maps_link: string | null;
   created_at: string;
+  // Which child raised it; a caregiver may look after several.
+  child_id?: string;
+  child_name?: string;
 }
 
 const formatTime = (iso: string) => {
@@ -30,7 +33,7 @@ const formatTime = (iso: string) => {
  * open SOS. Polls the backend, so an alert from the hardware button shows up
  * within a few seconds; "Mark safe" resolves it for everyone.
  */
-export function SosAlertBanner() {
+export function SosAlertBanner({ refreshKey = 0 }: { refreshKey?: number }) {
   const [alert, setAlert] = useState<SosAlert | null>(null);
   const [resolving, setResolving] = useState(false);
   const lastAlertId = useRef<string | null>(null);
@@ -57,11 +60,12 @@ export function SosAlertBanner() {
     }
   };
 
+  // refreshKey changes on the parent's pull-to-refresh: re-check right away.
   useEffect(() => {
     load();
     const interval = setInterval(load, POLL_MS);
     return () => clearInterval(interval);
-  }, []);
+  }, [refreshKey]);
 
   const handleResolve = async () => {
     const token = await AsyncStorage.getItem(AUTH_TOKEN_KEY);
@@ -70,7 +74,8 @@ export function SosAlertBanner() {
     try {
       const res = await fetch(`${API_BASE_URL}/api/sos/resolve/`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ child_id: alert?.child_id }),
       });
       if (res.ok) setAlert(null);
     } catch {}
@@ -83,7 +88,9 @@ export function SosAlertBanner() {
 
   return (
     <View style={styles.banner} accessibilityRole="alert">
-      <Text style={styles.title}>🚨 आपतकालीन SOS!</Text>
+      <Text style={styles.title}>
+        🚨 आपतकालीन SOS!{alert.child_name ? ` · ${alert.child_name}` : ''}
+      </Text>
       <Text style={styles.subtitle}>
         {alert.source === 'device' ? 'SOS उपकरणबाट (From SOS device)' : 'एपबाट (From the app)'}
         {' · '}

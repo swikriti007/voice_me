@@ -6,6 +6,7 @@ from rest_framework import status
 
 from authentication.views import get_authenticated_user
 from dashboard.db import children_collection
+from dashboard.views import _children_for_caregiver, _pick_child
 from .db import routines_collection
 from .services import apply_daily_reset, today_str
 
@@ -137,12 +138,16 @@ def caregiver_routines(request):
     if not caregiver_user_id:
         return Response({'error': 'Unauthorized access.'}, status=status.HTTP_401_UNAUTHORIZED)
 
-    child = children_collection.find_one({'caregiver.user_id': caregiver_user_id})
-    if not child:
+    children = _children_for_caregiver(caregiver_user_id)
+    if not children:
         return Response(
             {'error': 'Not connected to a child yet. Ask the parent for their connect code.'},
             status=status.HTTP_404_NOT_FOUND,
         )
+    # ?child_id= picks which linked child's routine to show; default is the first.
+    child = _pick_child(children, request.query_params.get('child_id'))
+    if not child:
+        return Response({'error': 'This child is not linked to your account.'}, status=status.HTTP_404_NOT_FOUND)
 
     doc = apply_daily_reset(routines_collection.find_one({'user_id': child.get('user_id')}))
     return Response({'items': _serialize_items(doc)}, status=status.HTTP_200_OK)

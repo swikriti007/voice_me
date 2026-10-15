@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -12,8 +12,9 @@ import {
   Switch,
   Modal,
   useWindowDimensions,
+  RefreshControl,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import Svg, { Path, Circle } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import * as Speech from 'expo-speech';
@@ -21,6 +22,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE_URL } from '@/constants/api';
 import { SosAlertBanner } from '@/components/sos-alert-banner';
 import { LogoutButton } from '@/components/logout-button';
+import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import { dialPhone } from '@/constants/phone';
 
 interface RoutineItem {
@@ -49,10 +51,13 @@ export default function Parentspage() {
   const [childName, setChildName] = useState('आरव (Aarav)');
   const [childAge, setChildAge] = useState('७ वर्ष (7 yrs)');
   const [selectedAvatar, setSelectedAvatar] = useState('👦');
-  const [parentName, setParentName] = useState('सिता शर्मा (Sita Sharma)');
-  const [emergencyPhone, setEmergencyPhone] = useState('९८४१११२२३३');
-  const [caregiverName, setCaregiverName] = useState('माया घिमिरे (Maya Ghimire)');
-  const [caregiverPhone, setCaregiverPhone] = useState('९८४१११२२३३');
+  const [parentName, setParentName] = useState('');
+  const [emergencyPhone, setEmergencyPhone] = useState('');
+  const [caregiverName, setCaregiverName] = useState('');
+  const [caregiverPhone, setCaregiverPhone] = useState('');
+  // Set once the backend profile has filled the form, so the slower
+  // AsyncStorage read below can't overwrite it with stale local values.
+  const profileLoadedRef = useRef(false);
   const [doctor, setDoctor] = useState<{ name?: string; phone?: string } | null>(null);
   const [speechRate, setSpeechRate] = useState<number>(0.95);
   const [geofenceEnabled, setGeofenceEnabled] = useState(true);
@@ -72,6 +77,48 @@ export default function Parentspage() {
       })
       .catch(() => {});
   }, []);
+
+  // The backend profile is the source of truth for the child and their
+  // contacts. The doctor is entered at child registration and only shown
+  // here (edit via Register). fillForm=false refreshes just the doctor so a
+  // pull-to-refresh doesn't wipe unsaved edits in the form.
+  const loadProfile = useCallback(async (fillForm: boolean) => {
+    const token = await AsyncStorage.getItem('voiceme.authToken');
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/child/profile/`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const profile = await res.json();
+      if (profile.doctor) setDoctor(profile.doctor);
+      if (!fillForm) return;
+      if (profile.name?.trim()) setChildName(profile.name.trim());
+      if (profile.age?.trim()) setChildAge(profile.age.trim());
+      if (profile.avatar?.trim()) setSelectedAvatar(profile.avatar.trim());
+      setParentName(profile.parent?.name ?? '');
+      setEmergencyPhone(profile.parent?.phone ?? '');
+      setCaregiverName(profile.caregiver?.name ?? '');
+      setCaregiverPhone(profile.caregiver?.phone ?? '');
+      profileLoadedRef.current = true;
+    } catch {}
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadProfile(true);
+    }, [loadProfile])
+  );
+
+  // Pull-to-refresh only re-reads backend data (doctor, SOS alerts); the
+  // settings form below is left alone so unsaved edits aren't wiped.
+  const [sosRefreshKey, setSosRefreshKey] = useState(0);
+  const { refreshing, onRefresh } = usePullToRefresh(
+    useCallback(async () => {
+      setSosRefreshKey((k) => k + 1);
+      await loadProfile(false);
+    }, [loadProfile])
+  );
 
   // Load existing profile & daily routines from storage once on mount
   useEffect(() => {
@@ -101,6 +148,14 @@ export default function Parentspage() {
         }
         stores.forEach(([key, val]) => {
           if (!val) return;
+          // Offline fallback only: once the backend profile has loaded,
+          // its child and contact details win.
+          const fromBackend = profileLoadedRef.current && [
+            'voiceme.registeredName', 'voiceme.registeredAge', 'voiceme.registeredAvatar',
+            'voiceme.parentName', 'voiceme.emergencyPhone',
+            'voiceme.caregiverName', 'voiceme.caregiverPhone',
+          ].includes(key);
+          if (fromBackend) return;
           if (key === 'voiceme.registeredName') setChildName(val);
           if (key === 'voiceme.registeredAge') setChildAge(val);
           if (key === 'voiceme.registeredAvatar') setSelectedAvatar(val);
@@ -124,20 +179,6 @@ export default function Parentspage() {
       })
       .catch(() => {});
 
-    // The doctor is entered at child registration and stored on the
-    // backend profile; this page only shows it (edit via Register).
-    (async () => {
-      const token = await AsyncStorage.getItem('voiceme.authToken');
-      if (!token) return;
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/child/profile/`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) return;
-        const profile = await res.json();
-        if (profile.doctor) setDoctor(profile.doctor);
-      } catch {}
-    })();
 
     // Only periodically poll the real-time Attention Bell alert status (never overwrite typed fields)
     const interval = setInterval(() => {
@@ -265,6 +306,25 @@ export default function Parentspage() {
       ]);
     } catch {}
 
+    // Save the child and contacts to the backend too, so the caregiver
+    // dashboard, SOS alerts and other devices see the same details.
+    try {
+      const token = await AsyncStorage.getItem('voiceme.authToken');
+      if (token) {
+        await fetch(`${API_BASE_URL}/api/child/profile/`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            name: childName.trim(),
+            age: childAge.trim(),
+            avatar: selectedAvatar,
+            parent: { name: parentName.trim(), phone: emergencyPhone.trim() },
+            caregiver: { name: caregiverName.trim(), phone: caregiverPhone.trim() },
+          }),
+        });
+      }
+    } catch {}
+
     setSaveSuccessVisible(true);
   };
 
@@ -297,7 +357,7 @@ export default function Parentspage() {
         </Pressable>
 
         {/* Home + Logout already fill a small phone's width; drop the brand there. */}
-        {width >= 360 && <Text style={styles.brandTitle}>Voice Me</Text>}
+        {width >= 420 && <Text style={styles.brandTitle} numberOfLines={1}>Voice Me</Text>}
 
         <LogoutButton />
       </View>
@@ -306,8 +366,9 @@ export default function Parentspage() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9C532B" colors={['#9C532B']} />}
       >
-        <SosAlertBanner />
+        <SosAlertBanner refreshKey={sosRefreshKey} />
 
         {/* Title Header */}
         <View style={styles.titleSection}>
@@ -507,7 +568,7 @@ export default function Parentspage() {
               style={styles.textInput}
               value={parentName}
               onChangeText={setParentName}
-              placeholder="e.g. Sita Sharma"
+              placeholder="Parent's full name"
               placeholderTextColor="#8C7D70"
             />
           </View>
@@ -534,7 +595,7 @@ export default function Parentspage() {
               style={styles.textInput}
               value={caregiverName}
               onChangeText={setCaregiverName}
-              placeholder="e.g. Maya Ghimire"
+              placeholder="Caregiver's full name"
               placeholderTextColor="#8C7D70"
             />
           </View>
@@ -559,9 +620,9 @@ export default function Parentspage() {
               <Text style={{ fontSize: 24 }}>💚</Text>
             </View>
             <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={styles.caregiverName}>{caregiverName || 'माया घिमिरे'}</Text>
+              <Text style={styles.caregiverName}>{caregiverName || 'हेरचाहकर्ता छैन (No caregiver yet)'}</Text>
               <Text style={styles.caregiverRole}>प्राथमिक हेरचाहकर्ता · Primary Caregiver</Text>
-              <Text style={styles.caregiverPhone}>📞 {caregiverPhone || '९८४१११२२३३'}</Text>
+              {caregiverPhone ? <Text style={styles.caregiverPhone}>📞 {caregiverPhone}</Text> : null}
             </View>
             <Pressable
               style={styles.caregiverCallBtn}
@@ -776,6 +837,8 @@ const styles = StyleSheet.create({
     color: '#342419',
   },
   brandTitle: {
+    flexShrink: 1,
+    marginHorizontal: 8,
     fontSize: 18,
     fontWeight: '800',
     color: '#4B2419',

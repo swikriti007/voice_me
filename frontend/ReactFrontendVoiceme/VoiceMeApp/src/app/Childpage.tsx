@@ -10,6 +10,7 @@ import {
   ScrollView,
   Platform,
   Modal,
+  RefreshControl,
 } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -17,6 +18,7 @@ import Svg, { Path, Circle } from 'react-native-svg';
 import { API_BASE_URL } from '@/constants/api';
 import { dialPhone } from '@/constants/phone';
 import { ConnectCodeCard } from '@/components/connect-code-card';
+import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 
 const AUTH_TOKEN_KEY = 'voiceme.authToken';
 const REGISTERED_NAME_KEY = 'voiceme.registeredName';
@@ -88,7 +90,11 @@ export const ChildProfileScreen: React.FC<ChildProfileProps> = ({
       if (profile.caregiver) setCaregiver(profile.caregiver);
       if (profile.gps?.location_label) setLocationLabel(profile.gps.location_label);
       if (profile.gps?.updated_at) {
-        setUpdatedLabel(`Updated ${new Date(profile.gps.updated_at).toLocaleTimeString()}`);
+        // Backend timestamps are UTC without a "Z"; add it so this shows local time.
+        const updatedAt = new Date(profile.gps.updated_at + (profile.gps.updated_at.endsWith('Z') ? '' : 'Z'));
+        setUpdatedLabel(profile.gps.connected
+          ? 'Live · updated now'
+          : `GPS band offline · last seen ${updatedAt.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`);
       }
     } catch {
       // Offline or backend unreachable: keep whatever is currently shown.
@@ -100,6 +106,8 @@ export const ChildProfileScreen: React.FC<ChildProfileProps> = ({
       loadProfile();
     }, [loadProfile])
   );
+
+  const { refreshing, onRefresh } = usePullToRefresh(loadProfile);
 
   const handleOpenCaregiver = () => {
     // The parent should see the caregiver's own contact details here (name,
@@ -145,6 +153,7 @@ export const ChildProfileScreen: React.FC<ChildProfileProps> = ({
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9C532B" colors={['#9C532B']} />}
       >
         {/* Navigation Top Bar */}
         <View style={styles.headerBar}>
@@ -199,7 +208,7 @@ export const ChildProfileScreen: React.FC<ChildProfileProps> = ({
             {/* Location Badge */}
             <View style={styles.mapLabelRow}>
               <Text style={styles.pinIcon}>📍</Text>
-              <Text style={styles.mapLabelText}>{locationLabel}</Text>
+              <Text style={styles.mapLabelText} numberOfLines={2}>{locationLabel}</Text>
             </View>
           </View>
 
@@ -440,6 +449,7 @@ const styles = StyleSheet.create({
     paddingBottom: 14,
   },
   mapLabelRow: {
+    maxWidth: '90%',
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'rgba(255, 255, 255, 0.92)',
@@ -457,6 +467,7 @@ const styles = StyleSheet.create({
     marginRight: 4,
   },
   mapLabelText: {
+    flexShrink: 1,
     fontSize: 13,
     fontWeight: '700',
     color: '#342F2A',

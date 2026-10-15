@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" width="1200" height="400">
+  <rect width="1200" height="400" fill="#F4EFE6"/>
+  <g transform="translate(40 -56) scale(0.95)">
+    <path d="M166 120 H306 A70 70 0 0 1 376 190 V270 A70 70 0 0 1 306 340 H210 L132 404 L146 334 Q96 318 96 270 V190 A70 70 0 0 1 166 120 Z" fill="#9C532B"/>
+    <path d="M236 292 C236 292 164 252 164 205 C164 180 184 164 206 164 C221 164 231 173 236 186 C241 173 251 164 266 164 C288 164 308 180 308 205 C308 252 236 292 236 292 Z" fill="#F4EFE6"/>
+    <path d="M408 196 A52 52 0 0 1 408 264" fill="none" stroke="#3F5B39" stroke-width="20" stroke-linecap="round"/>
+    <path d="M440 164 A100 100 0 0 1 440 296" fill="none" stroke="#3F5B39" stroke-width="20" stroke-linecap="round"/>
+  </g>
+  <text x="510" y="222" font-family="Nunito, Poppins, 'Arial Rounded MT Bold', 'Segoe UI', sans-serif" font-size="150" font-weight="800" letter-spacing="-3">
+    <tspan fill="#3F5B39">Voice</tspan><tspan fill="#9C532B">Me</tspan>
+  </text>
+  <text x="516" y="292" font-family="Nunito, Poppins, 'Segoe UI', sans-serif" font-size="40" font-weight="600" fill="#8A4A28" letter-spacing="1">Every child deserves to be heard.</text>
+</svg>

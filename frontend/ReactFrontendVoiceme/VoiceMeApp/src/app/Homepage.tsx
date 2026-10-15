@@ -9,8 +9,10 @@ import {
   Platform,
   useWindowDimensions,
   Alert,
+  Linking,
   Modal,
   ScrollView,
+  RefreshControl,
 } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -20,6 +22,7 @@ import * as Speech from 'expo-speech';
 import { API_BASE_URL } from '@/constants/api';
 import { clearSession } from '@/constants/session';
 import { ConnectCodeCard } from '@/components/connect-code-card';
+import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 
 const REGISTERED_NAME_KEY = 'voiceme.registeredName';
 const REGISTERED_AGE_KEY = 'voiceme.registeredAge';
@@ -56,6 +59,8 @@ export default function Homepage({
   const [menuVisible, setMenuVisible] = useState(false);
   const [sosModalVisible, setSosModalVisible] = useState(false);
   const [gpsStatus, setGpsStatus] = useState<GPSStatus | null>(null);
+  const [caregiver, setCaregiver] = useState<{ name?: string; phone?: string } | null>(null);
+  const [parent, setParent] = useState<{ name?: string; phone?: string } | null>(null);
   const [routineSummary, setRoutineSummary] = useState<{ done: number; total: number } | null>(null);
   // Code the parent shares so a caregiver can link to this child.
   const [connectCode, setConnectCode] = useState<string | null>(null);
@@ -90,6 +95,8 @@ export default function Homepage({
         if (profile.age?.trim()) setRegisteredAge(profile.age.trim());
         if (profile.avatar?.trim()) setRegisteredAvatar(profile.avatar.trim());
         if (profile.gps) setGpsStatus(profile.gps);
+        setCaregiver(profile.caregiver ?? null);
+        setParent(profile.parent ?? null);
         setConnectCode(typeof profile.connect_code === 'string' ? profile.connect_code : null);
       } else if (profileRes.status === 404) {
         setConnectCode(null);
@@ -151,6 +158,12 @@ export default function Homepage({
     }, [loadUserData, loadBackendData])
   );
 
+  const loadAll = useCallback(async () => {
+    loadUserData();
+    await loadBackendData();
+  }, [loadUserData, loadBackendData]);
+  const { refreshing, onRefresh } = usePullToRefresh(loadAll);
+
   // Attention bell chime & voice prompt
   const handleRingAttentionBell = async () => {
     try {
@@ -173,6 +186,11 @@ export default function Homepage({
     }
   };
 
+  // Backend timestamps are UTC without a "Z"; add it so this shows local time.
+  const gpsUpdatedAt = gpsStatus?.updated_at
+    ? new Date(gpsStatus.updated_at + (gpsStatus.updated_at.endsWith('Z') ? '' : 'Z'))
+    : null;
+
   const handleGPSPress = () => {
     try {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -185,15 +203,17 @@ export default function Homepage({
 
     const connected = gpsStatus?.connected ?? false;
     const locationLabel = gpsStatus?.location_label || 'थाहा छैन (Unknown)';
-    const updatedAt = gpsStatus?.updated_at
-      // Backend timestamps are UTC without a "Z"; add it so this shows local time.
-      ? new Date(gpsStatus.updated_at + (gpsStatus.updated_at.endsWith('Z') ? '' : 'Z')).toLocaleTimeString()
-      : 'भर्खरै (Just now)';
+    const updatedAt = gpsUpdatedAt ? gpsUpdatedAt.toLocaleString() : 'थाहा छैन (Unknown)';
 
-    Alert.alert(
-      '📍 जीपीएस ब्याण्ड स्थिति (GPS Status)',
-      `स्थिति: ${connected ? 'जोडिएको छ · Live' : 'जोडिएको छैन (Disconnected)'}\nस्थान: ${locationLabel}\nअन्तिम अपडेट: ${updatedAt}`
-    );
+    const title = '📍 जीपीएस ब्याण्ड स्थिति (GPS Status)';
+    const message = `स्थिति: ${connected ? 'जोडिएको छ · Live' : 'जोडिएको छैन (Disconnected)'}\nस्थान: ${locationLabel}\nअन्तिम अपडेट: ${updatedAt}`;
+
+    // Alert.alert is a no-op on web, so fall back to the browser dialog.
+    if (Platform.OS === 'web') {
+      window.alert(`${title}\n\n${message}`);
+      return;
+    }
+    Alert.alert(title, message);
   };
 
   const handleTriggerSOS = () => {
@@ -216,6 +236,7 @@ export default function Homepage({
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9C532B" colors={['#9C532B']} />}
       >
         {/* 1. Header Profile (Directs to Child Profile) */}
         <View style={styles.header}>
@@ -314,11 +335,15 @@ export default function Homepage({
             </Svg>
 
             <View style={styles.locationTextBlock}>
-              <Text style={styles.locationMainText}>
+              <Text style={styles.locationMainText} numberOfLines={2}>
                 {gpsStatus?.location_label || 'घरमा · At home'}
               </Text>
               <Text style={styles.locationSubText}>
-                {gpsStatus?.connected ? 'live location · updated now' : 'GPS band not connected'}
+                {gpsStatus?.connected
+                  ? 'live location · updated now'
+                  : gpsUpdatedAt
+                    ? `GPS band offline · last seen ${gpsUpdatedAt.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`
+                    : 'GPS band not connected'}
               </Text>
             </View>
           </View>
@@ -582,14 +607,18 @@ export default function Homepage({
             <View style={styles.sosLocationBox}>
               <Text style={styles.sosLocationHeading}>📍 वर्तमान स्थान (Live Location):</Text>
               <Text style={styles.sosLocationText}>
-                घर (Ward 4 Home Safe Zone) • 27.7172° N, 85.3240° E
+                {gpsStatus?.location_label || 'स्थान थाहा छैन (Location unknown)'}
               </Text>
-              <Text style={styles.sosDispatchText}>
-                ✓ स्याहारकर्ता (Maya Sharma) लाई सूचना पठाइयो
-              </Text>
-              <Text style={styles.sosDispatchText}>
-                ✓ अभिभावक (Sita Sharma) लाई सूचना पठाइयो
-              </Text>
+              {caregiver?.name ? (
+                <Text style={styles.sosDispatchText}>
+                  ✓ स्याहारकर्ता ({caregiver.name}) लाई सूचना पठाइयो
+                </Text>
+              ) : null}
+              {parent?.name ? (
+                <Text style={styles.sosDispatchText}>
+                  ✓ अभिभावक ({parent.name}) लाई सूचना पठाइयो
+                </Text>
+              ) : null}
             </View>
 
             {/* Quick Emergency Call Button */}
@@ -599,15 +628,10 @@ export default function Homepage({
                 pressed && styles.pressedState,
               ]}
               onPress={() => {
-                Alert.alert(
-                  '📞 आपतकालीन कल (Emergency Call)',
-                  'स्याहारकर्ता (Maya Sharma) वा नेपाल प्रहरी (100) लाई कल गर्नुहोस्?',
-                  [
-                    { text: 'रद्द गर्नुहोस् (Cancel)', style: 'cancel' },
-                    { text: 'स्याहारकर्तालाई कल (Call Caregiver)', onPress: () => Alert.alert('Calling Maya Sharma...', '९८४१११२२३३') },
-                    { text: 'प्रहरी (Call 100)', onPress: () => Alert.alert('Calling Police 100...', 'Dialing 100') },
-                  ]
-                );
+                // Dial the linked caregiver, or the parent, or police (100) if
+                // no contact is saved yet.
+                const phone = caregiver?.phone || parent?.phone || '100';
+                Linking.openURL(`tel:${phone}`).catch(() => { });
               }}
             >
               <Text style={styles.sosCallButtonText}>📞 तुरुन्त कल गर्नुहोस् (Call Caregiver)</Text>
@@ -841,10 +865,13 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   locationLeft: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
+    marginRight: 10,
   },
   locationTextBlock: {
+    flex: 1,
     marginLeft: 12,
   },
   locationMainText: {

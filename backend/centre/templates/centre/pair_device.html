@@ -1,0 +1,51 @@
+{% extends 'centre/base.html' %}
+{% block title %}Pair SOS device · Voice Me Centre{% endblock %}
+{% block head %}
+<style>
+  .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px; overflow-x: auto; margin: 8px 0; font-size: 14px; }
+  .key-box { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); }
+  .warn-box { background: var(--warn-bg); color: var(--warn); padding: 10px 14px; border-radius: 10px; margin: 10px 0; }
+  .ok-box { background: var(--ok-bg); color: var(--ok); padding: 10px 14px; border-radius: 10px; margin: 10px 0; font-weight: 600; }
+</style>
+{% endblock %}
+{% block content %}
+<p style="margin:0 0 12px"><a href="{% url 'centre:dashboard' %}">← All accounts</a></p>
+<div class="card" style="max-width:640px">
+  <h1>Pair SOS device</h1>
+  <p class="sub">Paste the family's Gmail to link an SOS band to their child and get its device key.</p>
+  <form method="post" action="{% url 'centre:pair-device' %}"
+        onsubmit="return confirm('If this child already has a band, its old key will stop working. Continue?')">
+    {% csrf_token %}
+    <label for="email">Family's Gmail address</label>
+    <input id="email" name="email" type="email" value="{{ form.email }}" placeholder="parent@gmail.com" required>
+
+    <label for="device_id">Device label (optional)</label>
+    <input id="device_id" name="device_id" value="{{ form.device_id }}" class="mono">
+    <div class="hint">Helps tell bands apart, e.g. SOS-BAND-02.</div>
+
+    <div style="margin-top:22px">
+      <button class="btn btn-primary" type="submit">Get device key</button>
+    </div>
+  </form>
+
+  {% if key %}
+  <div class="key-box">
+    <div class="ok-box">Paired {{ form.device_id }} with {{ child_name }}.</div>
+    {% if replaced %}<div class="warn-box">This child already had a band. Its old key no longer works.</div>{% endif %}
+    <label style="margin-top:0">Paste into <span class="mono">hardware/sos_device/secrets.h</span></label>
+    <pre id="secrets">#define BACKEND_URL    "{{ backend_url }}"
+#define DEVICE_KEY     "{{ key }}"</pre>
+    <button class="btn btn-sm" type="button" onclick="copySecrets(this)">Copy</button>
+    <div class="hint">Copy it now: the key is not stored and can't be shown again. Keep your Wi-Fi name and password lines as they are.</div>
+  </div>
+  {% endif %}
+</div>
+<script>
+  function copySecrets(button) {
+    navigator.clipboard.writeText(document.getElementById('secrets').textContent)
+      .then(() => { button.textContent = 'Copied'; });
+  }
+</script>
+{% endblock %}

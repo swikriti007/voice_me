@@ -1,4 +1,5 @@
 import datetime
+import socket
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -22,7 +23,7 @@ from authentication.security import (
     password_policy_error,
 )
 from dashboard.db import children_collection
-from dashboard.views import _generate_connect_code, _merge_contact
+from dashboard.views import _generate_connect_code, _merge_contact, pair_device
 
 # Only the centre's own staff (Django users with "staff status") get in;
 # parents and caregivers have app accounts, which can't sign in here.
@@ -68,7 +69,8 @@ def _account_rows():
         child_by_owner[child.get('user_id')] = child
         caregiver_id = (child.get('caregiver') or {}).get('user_id')
         if caregiver_id:
-            child_by_caregiver[caregiver_id] = child
+            # One caregiver can be linked to several children.
+            child_by_caregiver.setdefault(caregiver_id, []).append(child)
 
     rows = []
     for user in users:
@@ -82,6 +84,7 @@ def _account_rows():
             'email_verified': user.get('email_verified', False),
             'created_by_centre': user.get('created_by_centre', False),
             'child': None,
+            'children': [],
             'parent_name': '',
             'caregiver_name': '',
             'caregiver_email': '',
@@ -97,7 +100,7 @@ def _account_rows():
                 'caregiver_email': emails_by_id.get(caregiver.get('user_id'), ''),
             })
         elif user_id in child_by_caregiver:
-            row.update({'role': CAREGIVER, 'child': child_by_caregiver[user_id]})
+            row.update({'role': CAREGIVER, 'children': child_by_caregiver[user_id]})
         else:
             row['role'] = NOT_SET_UP
         rows.append(row)
@@ -218,6 +221,54 @@ def create_account(request):
 
     messages.success(request, f"Account created for {form['email']}.")
     return redirect('centre:dashboard')
+
+
+def _device_backend_url(request):
+    """
+    BACKEND_URL for the ESP8266 sketch. The device can't reach "localhost",
+    so when staff open the panel that way, swap in this machine's Wi-Fi IP.
+    """
+    host = request.get_host()
+    name, _, port = host.partition(':')
+    if name in ('localhost', '127.0.0.1'):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(('8.8.8.8', 80))  # picks the outgoing interface; sends nothing
+                name = s.getsockname()[0]
+        except OSError:
+            pass
+    return f"{request.scheme}://{name}{':' + port if port else ''}"
+
+
+@staff_required
+def pair_sos_device(request):
+    """
+    Staff paste a family's Gmail and get the DEVICE_KEY for the SOS band,
+    the same as `manage.py pair_device`. The key is shown on this page only.
+    """
+    form = {'email': normalize_email(request.GET.get('email') or ''), 'device_id': 'SOS-DEVICE-01'}
+    if request.method != 'POST':
+        return render(request, 'centre/pair_device.html', {'form': form})
+
+    form['email'] = normalize_email(request.POST.get('email') or '')
+    form['device_id'] = (request.POST.get('device_id') or '').strip() or 'SOS-DEVICE-01'
+
+    user = users_collection.find_one({'email': form['email']})
+    child = children_collection.find_one({'user_id': str(user['_id'])}) if user else None
+    if not user:
+        messages.error(request, f"No account with email {form['email'] or '(blank)'}.")
+    elif not child:
+        messages.error(request, 'That account has no child profile yet. Register the child in the app first.')
+    if not child:
+        return render(request, 'centre/pair_device.html', {'form': form}, status=400)
+
+    return render(request, 'centre/pair_device.html', {
+        'form': form,
+        'child_name': child.get('name') or 'child',
+        'replaced': bool(child.get('device')),
+        'key': pair_device(child, form['device_id']),
+        'backend_url': _device_backend_url(request),
+    })
 
 
 @staff_required

@@ -15,4 +15,5 @@ urlpatterns = [
     path('accounts/new/', views.create_account, name='create-account'),
     path('accounts/<str:user_id>/password/', views.set_password, name='set-password'),
     path('accounts/<str:user_id>/delete/', views.delete_account, name='delete-account'),
+    path('devices/pair/', views.pair_sos_device, name='pair-device'),
 ]

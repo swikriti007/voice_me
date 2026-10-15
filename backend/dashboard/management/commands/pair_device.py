@@ -1,11 +1,8 @@
-import datetime
-import secrets
-
 from django.core.management.base import BaseCommand, CommandError
 
 from authentication.db import users_collection
 from dashboard.db import children_collection
-from dashboard.views import hash_device_key
+from dashboard.views import pair_device
 
 
 class Command(BaseCommand):
@@ -14,6 +11,7 @@ class Command(BaseCommand):
     the ESP8266 sketch (DEVICE_KEY). The key is shown only once; only its
     hash is stored. Running it again for the same child issues a new key and
     the old one stops working (e.g. if a device is lost).
+    Centre staff can do the same from the admin panel (/centre/devices/pair/).
     """
 
     help = "Pair an SOS device with a child's account and print its device key."
@@ -30,12 +28,7 @@ class Command(BaseCommand):
         if not child:
             raise CommandError('That account has no child profile yet. Register the child in the app first.')
 
-        key = secrets.token_urlsafe(24)
-        children_collection.update_one({'_id': child['_id']}, {'$set': {'device': {
-            'id': options['device_id'],
-            'key_hash': hash_device_key(key),
-            'paired_at': datetime.datetime.utcnow(),
-        }}})
+        key = pair_device(child, options['device_id'])
 
         self.stdout.write(self.style.SUCCESS(f"Paired {options['device_id']} with {child.get('name') or 'child'}."))
         self.stdout.write('Put this in the ESP8266 sketch (it will not be shown again):')

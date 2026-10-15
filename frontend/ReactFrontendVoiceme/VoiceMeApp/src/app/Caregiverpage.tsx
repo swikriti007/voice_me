@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -10,8 +10,10 @@ import {
   Platform,
   Switch,
   Modal,
+  RefreshControl,
+  TextInput,
 } from 'react-native';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import Svg, { Path, Circle, Rect, Polyline } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import * as Speech from 'expo-speech';
@@ -20,6 +22,7 @@ import { API_BASE_URL } from '@/constants/api';
 import { dialPhone } from '@/constants/phone';
 import { SosAlertBanner } from '@/components/sos-alert-banner';
 import { LogoutButton } from '@/components/logout-button';
+import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 
 // Shape returned by /api/caregiver/routines/ — the connected child's own
 // routine, which the caregiver can only watch, never set or edit.
@@ -46,6 +49,17 @@ const LOCATION_REFRESH_MS = 15000;
 const AUTH_TOKEN_KEY = 'voiceme.authToken';
 
 const SELECTED_ROLE_KEY = 'voiceme.selectedRole';
+
+// Which of the caregiver's linked children the dashboard last showed.
+const SELECTED_CHILD_KEY = 'voiceme.caregiverChildId';
+
+// One entry in the caregiver's child switcher (from /api/caregiver/dashboard/).
+interface LinkedChild {
+  id: string;
+  name: string;
+  age: string;
+  avatar: string;
+}
 
 export default function Caregiverpage() {
   // Parents (the child's own "user" account) are supervisors here, not the
@@ -200,13 +214,22 @@ function CaregiverDashboard() {
   const [emergencyPhone, setEmergencyPhone] = useState('');
   const [doctorName, setDoctorName] = useState('');
   const [doctorPhone, setDoctorPhone] = useState('');
-  const [caregiverName, setCaregiverName] = useState('माया घिमिरे (Maya Ghimire)');
+  const [caregiverName, setCaregiverName] = useState('');
 
   const [isBellActive, setIsBellActive] = useState(false);
   const [soundAlertsEnabled, setSoundAlertsEnabled] = useState(true);
   const [routines, setRoutines] = useState<RoutineItem[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [gpsStatus, setGpsStatus] = useState<GPSStatus | null>(null);
+
+  // A caregiver can look after several children; the dashboard shows one at
+  // a time. The ref lets the polling timer follow the current selection.
+  const [linkedChildren, setLinkedChildren] = useState<LinkedChild[]>([]);
+  const [selectedChildId, setSelectedChildId] = useState<string | null>(null);
+  const selectedChildIdRef = useRef<string | null>(null);
+  const [newConnectCode, setNewConnectCode] = useState('');
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState('');
 
   const completedCount = routines.filter((r) => r.completed).length;
   const progressPercent = routines.length > 0 ? Math.round((completedCount / routines.length) * 100) : 0;
@@ -225,6 +248,129 @@ function CaregiverDashboard() {
     titleEn: '',
     message: '',
   });
+
+  // The backend is the real link between this caregiver's account and the
+  // child they connected to via CaregiverRegistrationPage's code; the
+  // AsyncStorage values above are just same-device fallbacks/cache.
+  const loadDashboard = useCallback(async (childId?: string | null) => {
+    const token = await AsyncStorage.getItem(AUTH_TOKEN_KEY);
+    if (!token) return;
+
+    let wanted = childId !== undefined ? childId : selectedChildIdRef.current;
+    if (wanted === null && childId === undefined) {
+      wanted = await AsyncStorage.getItem(SELECTED_CHILD_KEY).catch(() => null);
+    }
+    const query = (id: string | null) => (id ? `?child_id=${encodeURIComponent(id)}` : '');
+
+    let shownId: string | null = null;
+    try {
+      let res = await fetch(`${API_BASE_URL}/api/caregiver/dashboard/${query(wanted)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      // The remembered child may have been unlinked since: fall back to the first.
+      if (res.status === 404 && wanted) {
+        res = await fetch(`${API_BASE_URL}/api/caregiver/dashboard/`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      }
+      if (!res.ok) return;
+
+      const child = await res.json();
+      setIsConnected(true);
+      shownId = child.id ?? null;
+      selectedChildIdRef.current = shownId;
+      setSelectedChildId(shownId);
+      if (shownId) AsyncStorage.setItem(SELECTED_CHILD_KEY, shownId).catch(() => {});
+      if (Array.isArray(child.children)) setLinkedChildren(child.children);
+      // Set every field, even empty ones, so switching children never leaves
+      // the previous child's contacts or location on screen.
+      setChildName(child.name?.trim() || '—');
+      setChildAge(child.age?.trim() || '—');
+      setChildAvatar(child.avatar?.trim() || '🧒');
+      setParentName(child.parent?.name || '');
+      setEmergencyPhone(child.parent?.phone || '');
+      setDoctorName(child.doctor?.name || '');
+      setDoctorPhone(child.doctor?.phone || '');
+      if (child.caregiver?.name) setCaregiverName(child.caregiver.name);
+      setGpsStatus(child.gps ?? null);
+    } catch {
+      // Offline or backend unreachable: keep whatever is currently shown.
+      return;
+    }
+
+    // The routine belongs to the child and is set from the child's own
+    // account; the caregiver only gets a read-only view of it.
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/caregiver/routines/${query(shownId)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        setRoutines([]);
+        return;
+      }
+      const data = await res.json();
+      setRoutines(Array.isArray(data.items) ? data.items : []);
+    } catch {}
+  }, []);
+
+  const handleSelectChild = (id: string) => {
+    if (id === selectedChildId) return;
+    try {
+      Haptics.selectionAsync();
+    } catch {}
+    loadDashboard(id);
+  };
+
+  // Links one more child to this caregiver with that child's parent's code.
+  const handleConnectAnotherChild = async () => {
+    const code = newConnectCode.trim();
+    if (!code) return;
+    const token = await AsyncStorage.getItem(AUTH_TOKEN_KEY);
+    if (!token) return;
+    setConnecting(true);
+    setConnectError('');
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/caregiver/connect/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ code, name: caregiverName }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setConnectError(
+          data?.error === 'Invalid connect code.'
+            ? 'गलत कोड (Invalid code — please check with the parent)'
+            : 'जडान असफल भयो (Could not connect, please try again)'
+        );
+        return;
+      }
+      setNewConnectCode('');
+      try {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } catch {}
+      await loadDashboard(data.id ?? null);
+    } catch {
+      setConnectError('सर्भरमा पुग्न सकिएन (Could not reach the server)');
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  // Reload on every visit, not just the first mount, so coming back to this
+  // screen shows the latest child details, location and routine.
+  useFocusEffect(
+    useCallback(() => {
+      loadDashboard();
+    }, [loadDashboard])
+  );
+
+  const [sosRefreshKey, setSosRefreshKey] = useState(0);
+  const { refreshing, onRefresh } = usePullToRefresh(
+    useCallback(async () => {
+      setSosRefreshKey((k) => k + 1);
+      await loadDashboard();
+    }, [loadDashboard])
+  );
 
   // Load registered child, caregiver info & bell status from AsyncStorage on mount
   useEffect(() => {
@@ -251,45 +397,6 @@ function CaregiverDashboard() {
       })
       .catch(() => {});
 
-    // The backend is the real link between this caregiver's account and the
-    // child they connected to via CaregiverRegistrationPage's code; the
-    // AsyncStorage values above are just same-device fallbacks/cache.
-    (async () => {
-      const token = await AsyncStorage.getItem(AUTH_TOKEN_KEY);
-      if (!token) return;
-
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/caregiver/dashboard/`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) return;
-
-        const child = await res.json();
-        setIsConnected(true);
-        if (child.name?.trim()) setChildName(child.name.trim());
-        if (child.age?.trim()) setChildAge(child.age.trim());
-        if (child.avatar?.trim()) setChildAvatar(child.avatar.trim());
-        if (child.parent?.name) setParentName(child.parent.name);
-        if (child.parent?.phone) setEmergencyPhone(child.parent.phone);
-        if (child.doctor?.name) setDoctorName(child.doctor.name);
-        if (child.doctor?.phone) setDoctorPhone(child.doctor.phone);
-        if (child.caregiver?.name) setCaregiverName(child.caregiver.name);
-        if (child.gps) setGpsStatus(child.gps);
-      } catch {
-        // Offline or backend unreachable: keep whatever is currently shown.
-      }
-
-      // The routine belongs to the child and is set from the child's own
-      // account; the caregiver only gets a read-only view of it.
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/caregiver/routines/`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (Array.isArray(data.items)) setRoutines(data.items);
-      } catch {}
-    })();
 
     // Only periodically poll the real-time Attention Bell alert status
     const interval = setInterval(() => {
@@ -305,12 +412,15 @@ function CaregiverDashboard() {
       try {
         const token = await AsyncStorage.getItem(AUTH_TOKEN_KEY);
         if (!token) return;
-        const res = await fetch(`${API_BASE_URL}/api/caregiver/dashboard/`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+        const id = selectedChildIdRef.current;
+        const res = await fetch(
+          `${API_BASE_URL}/api/caregiver/dashboard/${id ? `?child_id=${encodeURIComponent(id)}` : ''}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
         if (!res.ok) return;
         const child = await res.json();
-        if (child.gps) setGpsStatus(child.gps);
+        // Ignore a reply for a child the caregiver has switched away from.
+        if (child.id === selectedChildIdRef.current && child.gps) setGpsStatus(child.gps);
       } catch {}
     }, LOCATION_REFRESH_MS);
 
@@ -479,13 +589,14 @@ function CaregiverDashboard() {
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#9C532B" colors={['#9C532B']} />}
       >
-        <SosAlertBanner />
+        <SosAlertBanner refreshKey={sosRefreshKey} />
 
         {/* Title Block */}
         <View style={styles.titleSection}>
           <View style={styles.caregiverBadgeRow}>
-            <Text style={styles.caregiverBadgeText}>💚 हेरचाहकर्ता: {caregiverName}</Text>
+            <Text style={styles.caregiverBadgeText}>💚 हेरचाहकर्ता: {caregiverName || '—'}</Text>
           </View>
           <Text style={styles.nepaliTitle}>हेरचाहकर्ता ड्यासबोर्ड</Text>
           <Text style={styles.englishTitle}>Caregiver Dashboard</Text>
@@ -505,6 +616,35 @@ function CaregiverDashboard() {
           </View>
         )}
 
+        {/* Child switcher: one caregiver, many children */}
+        {linkedChildren.length > 1 && (
+          <View style={styles.childSwitcher}>
+            <Text style={styles.childSwitcherLabel}>
+              बालबालिका छान्नुहोस् (Your children · {linkedChildren.length})
+            </Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.childChipRow}>
+              {linkedChildren.map((c) => {
+                const active = c.id === selectedChildId;
+                return (
+                  <Pressable
+                    key={c.id}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    accessibilityLabel={`Show ${c.name || 'child'}`}
+                    style={({ pressed }) => [styles.childChip, active && styles.childChipActive, pressed && styles.pressedState]}
+                    onPress={() => handleSelectChild(c.id)}
+                  >
+                    <Text style={styles.childChipAvatar}>{c.avatar || '🧒'}</Text>
+                    <Text style={[styles.childChipName, active && styles.childChipNameActive]} numberOfLines={1}>
+                      {c.name || '—'}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </View>
+        )}
+
         {/* 1. Child Live Status Card */}
         <View style={styles.childStatusCard}>
           <View style={styles.childHeaderRow}>
@@ -517,9 +657,11 @@ function CaregiverDashboard() {
               <Text style={styles.childMeta}>उमेर: {childAge}</Text>
             </View>
 
-            <View style={styles.liveBadge}>
-              <View style={styles.liveDot} />
-              <Text style={styles.liveText}>लाइभ (Live)</Text>
+            <View style={[styles.liveBadge, !gpsStatus?.connected && styles.liveBadgeOffline]}>
+              <View style={[styles.liveDot, !gpsStatus?.connected && styles.liveDotOffline]} />
+              <Text style={[styles.liveText, !gpsStatus?.connected && styles.liveTextOffline]}>
+                {gpsStatus?.connected ? 'लाइभ (Live)' : 'अफलाइन (Offline)'}
+              </Text>
             </View>
           </View>
 
@@ -541,7 +683,9 @@ function CaregiverDashboard() {
                 ? `सक्रिय (Active)${gpsStatus.updated_at
                   ? ` · ${new Date(gpsStatus.updated_at + (gpsStatus.updated_at.endsWith('Z') ? '' : 'Z')).toLocaleTimeString()}`
                   : ''}`
-                : 'जोडिएको छैन (Not connected)'}
+                : gpsStatus?.updated_at
+                  ? `अफलाइन (Offline) · last seen ${new Date(gpsStatus.updated_at + (gpsStatus.updated_at.endsWith('Z') ? '' : 'Z')).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`
+                  : 'जोडिएको छैन (Not connected)'}
             </Text>
           </View>
 
@@ -705,6 +849,42 @@ function CaregiverDashboard() {
             </Text>
           </Pressable>
         </View>
+
+        {/* 5. Connect another child */}
+        {isConnected && (
+          <View style={styles.connectCard}>
+            <Text style={styles.sectionTitle}>अर्को बालबालिका जोड्नुहोस्</Text>
+            <Text style={styles.sectionSub}>Connect another child with their parent's code</Text>
+            <View style={styles.connectRow}>
+              <TextInput
+                style={styles.connectInput}
+                value={newConnectCode}
+                onChangeText={(t) => {
+                  setNewConnectCode(t.toUpperCase());
+                  setConnectError('');
+                }}
+                placeholder="Connect code"
+                placeholderTextColor="#9A8B7D"
+                autoCapitalize="characters"
+                autoCorrect={false}
+              />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Connect child"
+                disabled={connecting || !newConnectCode.trim()}
+                style={({ pressed }) => [
+                  styles.connectButton,
+                  (connecting || !newConnectCode.trim()) && styles.contactButtonDisabled,
+                  pressed && styles.pressedState,
+                ]}
+                onPress={handleConnectAnotherChild}
+              >
+                <Text style={styles.connectButtonText}>{connecting ? '...' : 'जोड्नुहोस् · Connect'}</Text>
+              </Pressable>
+            </View>
+            {connectError ? <Text style={styles.connectError}>{connectError}</Text> : null}
+          </View>
+        )}
       </ScrollView>
 
       {/* Universal Action / Dialog Modal */}
@@ -767,6 +947,89 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 12,
     paddingBottom: 8,
+  },
+  childSwitcher: {
+    marginBottom: 12,
+  },
+  childSwitcherLabel: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: '#6E5C50',
+    marginBottom: 8,
+  },
+  childChipRow: {
+    columnGap: 8,
+  },
+  childChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    columnGap: 6,
+    maxWidth: 180,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E4D8C6',
+    borderRadius: 20,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+  },
+  childChipActive: {
+    backgroundColor: '#2E5936',
+    borderColor: '#2E5936',
+  },
+  childChipAvatar: {
+    fontSize: 16,
+  },
+  childChipName: {
+    flexShrink: 1,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#342419',
+  },
+  childChipNameActive: {
+    color: '#FFFFFF',
+  },
+  connectCard: {
+    marginTop: 20,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 16,
+  },
+  connectRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    columnGap: 8,
+    marginTop: 12,
+  },
+  connectInput: {
+    flex: 1,
+    minWidth: 0,
+    borderWidth: 1.5,
+    borderColor: '#E4D8C6',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: 1,
+    color: '#342419',
+    backgroundColor: '#FBF7F1',
+  },
+  connectButton: {
+    backgroundColor: '#2E5936',
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+  connectButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '800',
+    fontSize: 13,
+  },
+  connectError: {
+    marginTop: 8,
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: '#B3261E',
   },
   backButton: {
     flexDirection: 'row',
@@ -897,9 +1160,19 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#2E5936',
   },
+  liveBadgeOffline: {
+    backgroundColor: '#F1ECE5',
+  },
+  liveDotOffline: {
+    backgroundColor: '#B0A99C',
+  },
+  liveTextOffline: {
+    color: '#76675B',
+  },
   statusRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    columnGap: 10,
     paddingVertical: 5,
     borderTopWidth: 1,
     borderTopColor: '#F4ECE2',
@@ -910,6 +1183,8 @@ const styles = StyleSheet.create({
     color: '#6E5C50',
   },
   statusValue: {
+    flex: 1,
+    textAlign: 'right',
     fontSize: 12.5,
     fontWeight: '700',
     color: '#342419',

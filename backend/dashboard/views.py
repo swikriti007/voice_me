@@ -93,6 +93,26 @@ def _public_contact(contact):
     }
 
 
+# The device reports every ~30 s, so three missed reports means the band is
+# off or out of range: it's no longer "live", and the stored position is shown
+# as its last known location instead.
+GPS_STALE_AFTER = datetime.timedelta(seconds=90)
+
+
+def _gps_for_response(child):
+    gps = dict(child.get('gps') or {'connected': False, 'location_label': None, 'place_category': None, 'updated_at': None})
+    try:
+        updated_at = datetime.datetime.fromisoformat(gps.get('updated_at') or '')
+    except ValueError:
+        updated_at = None
+    # Only the hardware itself counts as live; test locations posted from the
+    # app (gps_status POST) never do.
+    if (gps.get('source') != 'device' or updated_at is None
+            or datetime.datetime.utcnow() - updated_at > GPS_STALE_AFTER):
+        gps['connected'] = False
+    return gps
+
+
 def _serialize_child(child, include_connect_code=True):
     serialized = {
         'id': str(child['_id']),
@@ -104,7 +124,7 @@ def _serialize_child(child, include_connect_code=True):
         # The child's doctor, entered with the parent's details at child
         # registration; the parent and caregiver both see it and can call it.
         'doctor': _public_contact(child.get('doctor')),
-        'gps': child.get('gps', {'connected': False, 'location_label': None, 'place_category': None, 'updated_at': None}),
+        'gps': _gps_for_response(child),
     }
     if include_connect_code:
         # The connect code is the parent's own invite secret for linking
@@ -112,6 +132,28 @@ def _serialize_child(child, include_connect_code=True):
         # a caregiver's dashboard (which would let them re-share it further).
         serialized['connect_code'] = child.get('connect_code')
     return serialized
+
+
+def _children_for_caregiver(caregiver_user_id):
+    """Every child linked to this caregiver account, oldest link first."""
+    return list(children_collection.find({'caregiver.user_id': caregiver_user_id}).sort('_id', 1))
+
+
+def _pick_child(children, child_id):
+    """The child with this id from the list, the first one if no id is given, or None."""
+    if not child_id:
+        return children[0] if children else None
+    return next((c for c in children if str(c['_id']) == str(child_id)), None)
+
+
+def _child_summary(child):
+    """Just enough to list a child in the caregiver's child switcher."""
+    return {
+        'id': str(child['_id']),
+        'name': child.get('name', ''),
+        'age': child.get('age', ''),
+        'avatar': child.get('avatar', ''),
+    }
 
 
 @api_view(['GET', 'POST'])
@@ -172,8 +214,7 @@ def gps_status(request):
         return Response({'error': 'No child profile found for this account.'}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == 'GET':
-        gps = child.get('gps') or {'connected': False, 'location_label': None, 'place_category': None, 'updated_at': None}
-        return Response(gps, status=status.HTTP_200_OK)
+        return Response(_gps_for_response(child), status=status.HTTP_200_OK)
 
     # POST: the GPS band reports raw coordinates here once it's built, and
     # they get reverse-geocoded into a place category. Until then this also
@@ -219,6 +260,16 @@ def connect_caregiver(request):
     data = request.data
     code = (data.get('code') or '').strip().upper()
     name = (data.get('name') or '').strip()
+    phone = data.get('phone')
+
+    # One caregiver can look after many children: connecting another code
+    # adds that child alongside the ones already linked. A caregiver who is
+    # already linked reuses the name/phone they gave the first time.
+    already_linked = _children_for_caregiver(caregiver_user_id)
+    if already_linked:
+        known = already_linked[0].get('caregiver') or {}
+        name = name or known.get('name', '')
+        phone = phone or known.get('phone')
     if not code or not name:
         return Response({'error': 'Connect code and name are required.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -228,7 +279,7 @@ def connect_caregiver(request):
 
     caregiver = _merge_contact(child.get('caregiver'), {
         'name': name,
-        'phone': data.get('phone'),
+        'phone': phone,
     }, 'CG')
     caregiver['user_id'] = caregiver_user_id
 
@@ -243,13 +294,20 @@ def caregiver_dashboard(request):
     if not caregiver_user_id:
         return Response({'error': 'Unauthorized access.'}, status=status.HTTP_401_UNAUTHORIZED)
 
-    child = children_collection.find_one({'caregiver.user_id': caregiver_user_id})
-    if not child:
+    children = _children_for_caregiver(caregiver_user_id)
+    if not children:
         return Response(
             {'error': 'Not connected to a child yet. Ask the parent for their connect code.'},
             status=status.HTTP_404_NOT_FOUND,
         )
-    return Response(_serialize_child(child, include_connect_code=False), status=status.HTTP_200_OK)
+    # ?child_id= picks which linked child to show; default is the first.
+    child = _pick_child(children, request.query_params.get('child_id'))
+    if not child:
+        return Response({'error': 'This child is not linked to your account.'}, status=status.HTTP_404_NOT_FOUND)
+
+    data = _serialize_child(child, include_connect_code=False)
+    data['children'] = [_child_summary(c) for c in children]
+    return Response(data, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])
@@ -297,6 +355,21 @@ SOS_ACTIVE_WINDOW = datetime.timedelta(hours=24)
 
 def hash_device_key(key):
     return hashlib.sha256(key.encode('utf-8')).hexdigest()
+
+
+def pair_device(child, device_id='SOS-DEVICE-01'):
+    """
+    Links an SOS device to a child and returns its new key. Only the hash is
+    stored, so the key can't be shown again; pairing again issues a new key
+    and the old one stops working (e.g. if a device is lost).
+    """
+    key = secrets.token_urlsafe(24)
+    children_collection.update_one({'_id': child['_id']}, {'$set': {'device': {
+        'id': device_id,
+        'key_hash': hash_device_key(key),
+        'paired_at': datetime.datetime.utcnow(),
+    }}})
+    return key
 
 
 def _authenticate_device(request):
@@ -386,10 +459,13 @@ def device_sos(request):
                     status=status.HTTP_201_CREATED)
 
 
-def _child_for_viewer(user_id):
-    """The child a logged-in parent (owner) or connected caregiver looks after."""
-    return (children_collection.find_one({'user_id': user_id})
-            or children_collection.find_one({'caregiver.user_id': user_id}))
+def _children_for_viewer(user_id):
+    """
+    The children a logged-in account looks after: the parent's own child, or
+    every child a caregiver has connected to.
+    """
+    own = children_collection.find_one({'user_id': user_id})
+    return [own] if own else _children_for_caregiver(user_id)
 
 
 def _serialize_alert(alert):
@@ -417,19 +493,27 @@ def sos_latest(request):
     if not user_id:
         return Response({'error': 'Unauthorized access.'}, status=status.HTTP_401_UNAUTHORIZED)
 
-    child = _child_for_viewer(user_id)
-    if not child:
+    children = _children_for_viewer(user_id)
+    if not children:
         return Response({'alert': None}, status=status.HTTP_200_OK)
 
+    # Newest open alert across every child this account looks after, so a
+    # caregiver with several children sees whichever one needs help.
     alert = sos_alerts_collection.find_one(
         {
-            'child_id': child['_id'],
+            'child_id': {'$in': [c['_id'] for c in children]},
             **_OPEN_ALERT,
             'created_at': {'$gte': datetime.datetime.utcnow() - SOS_ACTIVE_WINDOW},
         },
         sort=[('created_at', -1)],
     )
-    return Response({'alert': _serialize_alert(alert) if alert else None}, status=status.HTTP_200_OK)
+    if not alert:
+        return Response({'alert': None}, status=status.HTTP_200_OK)
+    serialized = _serialize_alert(alert)
+    child = next(c for c in children if c['_id'] == alert['child_id'])
+    serialized['child_id'] = str(child['_id'])
+    serialized['child_name'] = child.get('name', '')
+    return Response({'alert': serialized}, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])
@@ -438,9 +522,14 @@ def sos_resolve(request):
     if not user_id:
         return Response({'error': 'Unauthorized access.'}, status=status.HTTP_401_UNAUTHORIZED)
 
-    child = _child_for_viewer(user_id)
-    if not child:
+    children = _children_for_viewer(user_id)
+    if not children:
         return Response({'error': 'No child found for this account.'}, status=status.HTTP_404_NOT_FOUND)
+    # A caregiver with several children says which one is safe; without a
+    # child_id the first (a parent's only) child is meant.
+    child = _pick_child(children, request.data.get('child_id'))
+    if not child:
+        return Response({'error': 'This child is not linked to your account.'}, status=status.HTTP_404_NOT_FOUND)
 
     # Resolves every open alert: the child is safe, whichever button (phone
     # or device) raised the alarm and however many times it was pressed.
